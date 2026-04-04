@@ -65,7 +65,11 @@ interface LoginSuccessMessage {
 
 interface StateUpdateMessage {
 	type: 'state_update'
-	state: Partial<UserState>
+	user_id?: string
+	revision?: number
+	origin?: Record<string, unknown>
+	last_updated_at?: string
+	state: UserState
 }
 
 interface KeysChangedMessage {
@@ -182,6 +186,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 	private availableUsers: UserInfo[] = []
 	private connectedUsers = new Set<string>()
 	private state: UserState = createEmptyState()
+	private stateRevision = 0
 
 	private talkControlState: KeyControlState = this.createControlState()
 	private listenControlState: KeyControlState = this.createControlState()
@@ -480,33 +485,18 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 	}
 
 	private handleStateUpdate(message: StateUpdateMessage): void {
+		const revision = message.revision ?? 0
+		if (revision < this.stateRevision) return
+		this.stateRevision = revision
 		this.state = {
-			...this.state,
-			...message.state,
-			talk_active: {
-				...this.state.talk_active,
-				...(message.state.talk_active ?? {}),
-			},
-			listen_active: {
-				...this.state.listen_active,
-				...(message.state.listen_active ?? {}),
-			},
-			listen_level: {
-				...this.state.listen_level,
-				...(message.state.listen_level ?? {}),
-			},
-			party_line_talk_active: {
-				...this.state.party_line_talk_active,
-				...(message.state.party_line_talk_active ?? {}),
-			},
-			party_line_listen_active: {
-				...this.state.party_line_listen_active,
-				...(message.state.party_line_listen_active ?? {}),
-			},
-			party_line_listen_level: {
-				...this.state.party_line_listen_level,
-				...(message.state.party_line_listen_level ?? {}),
-			},
+			talk_active: { ...(message.state.talk_active ?? {}) },
+			listen_active: { ...(message.state.listen_active ?? {}) },
+			listen_level: { ...(message.state.listen_level ?? {}) },
+			global_mode: message.state.global_mode ?? 'mute',
+			global_active: message.state.global_active ?? false,
+			party_line_talk_active: { ...(message.state.party_line_talk_active ?? {}) },
+			party_line_listen_active: { ...(message.state.party_line_listen_active ?? {}) },
+			party_line_listen_level: { ...(message.state.party_line_listen_level ?? {}) },
 		}
 
 		this.syncLatchStateFromServer()
@@ -1375,6 +1365,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 		this.availableUsers = []
 		this.connectedUsers.clear()
 		this.state = createEmptyState()
+		this.stateRevision = 0
 		this.talkControlState = this.createControlState()
 		this.listenControlState = this.createControlState()
 		this.globalLatched = false
