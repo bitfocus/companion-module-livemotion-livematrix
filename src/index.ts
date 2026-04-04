@@ -257,7 +257,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 				isVisibleExpression: "$(options:connection_mode) == 'server'",
 			},
 			{
-				type: 'secret-text',
+				type: 'textinput',
 				id: 'password',
 				label: 'Password',
 				width: 6,
