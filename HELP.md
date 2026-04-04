@@ -9,4 +9,4 @@ Connection modes:
 
 The module tracks key config and state updates in real time, exposes per-key variables, and provides talk/listen/global actions plus matching feedbacks and presets.
 
-Listen level actions and variables use dB. Direct user listen levels are clamped to `0 dB` max, while party lines can be raised up to about `+6 dB`.
+Listen level actions and variables use dB. The action range is `-100 dB` to `+6 dB`; direct user listen levels are clamped to `0 dB` max, while party lines can go up to `+6 dB`.

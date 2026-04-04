@@ -649,7 +649,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 					{
 						type: 'number' as const,
 						id: 'level',
-						label: 'Level dB',
+						label: 'Level dB (-100 to +6, users max 0)',
 						default: 0,
 						min: MIN_LISTEN_LEVEL_DB,
 						max: 6,
