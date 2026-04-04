@@ -117,6 +117,7 @@ const TAP_THRESHOLD_MS = 300
 const KEEP_ALIVE_INTERVAL_MS = 30_000
 const DEFAULT_SERVER_PORT = 55678
 const DEFAULT_CLIENT_PORT = 9100
+const MIN_LISTEN_LEVEL_DB = -100
 
 const keySelectChoices = [
 	{ id: 'target', label: 'By target' },
@@ -156,6 +157,16 @@ function sanitizeName(name: string): string {
 
 function clamp(value: number, min: number, max: number): number {
 	return Math.max(min, Math.min(max, value))
+}
+
+function linearToDb(level: number): number {
+	if (level <= 0) return MIN_LISTEN_LEVEL_DB
+	return 20 * Math.log10(level)
+}
+
+function dbToLinear(levelDb: number): number {
+	if (levelDb <= MIN_LISTEN_LEVEL_DB) return 0
+	return 10 ** (levelDb / 20)
 }
 
 export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
@@ -638,17 +649,39 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 					{
 						type: 'number' as const,
 						id: 'level',
-						label: 'Level %',
-						default: 100,
-						min: 0,
-						max: 100,
+						label: 'Level dB',
+						default: 0,
+						min: MIN_LISTEN_LEVEL_DB,
+						max: 6,
+						step: 0.1,
 						range: false,
 					},
 				],
 				callback: async (action) => {
 					const key = this.resolveKey(action.options)
-					const level = Number(action.options.level ?? 100)
-					if (key) this.onListenLevelSet(key, level)
+					const levelDb = Number(action.options.level ?? 0)
+					if (key) this.onListenLevelSetDb(key, levelDb)
+				},
+			},
+			listen_level_delta: {
+				name: 'Change listen level by dB',
+				options: [
+					...this.getKeySelectorOptions(),
+					{
+						type: 'number' as const,
+						id: 'delta_db',
+						label: 'Delta dB',
+						default: 1,
+						min: -60,
+						max: 60,
+						step: 0.1,
+						range: false,
+					},
+				],
+				callback: async (action) => {
+					const key = this.resolveKey(action.options)
+					const deltaDb = Number(action.options.delta_db ?? 1)
+					if (key) this.onListenLevelAdjustDb(key, deltaDb)
 				},
 			},
 			global_mode: {
@@ -872,11 +905,11 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 				{ variableId: `key_${index}_target_id`, name: `Key ${index} target ID` },
 				{ variableId: `key_${index}_talk`, name: `Key ${index} talk active` },
 				{ variableId: `key_${index}_listen`, name: `Key ${index} listen active` },
-				{ variableId: `key_${index}_level`, name: `Key ${index} listen level %` },
+				{ variableId: `key_${index}_level`, name: `Key ${index} listen level dB` },
 				{ variableId: `tid_${key.target_id}_name`, name: `${key.display_name} name` },
 				{ variableId: `tid_${key.target_id}_talk`, name: `${key.display_name} talk active` },
 				{ variableId: `tid_${key.target_id}_listen`, name: `${key.display_name} listen active` },
-				{ variableId: `tid_${key.target_id}_level`, name: `${key.display_name} listen level %` }
+				{ variableId: `tid_${key.target_id}_level`, name: `${key.display_name} listen level dB` }
 			)
 
 			const sanitized = sanitizeName(key.display_name)
@@ -885,7 +918,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 				variables.push(
 					{ variableId: `target_${sanitized}_talk`, name: `${key.display_name} talk active` },
 					{ variableId: `target_${sanitized}_listen`, name: `${key.display_name} listen active` },
-					{ variableId: `target_${sanitized}_level`, name: `${key.display_name} listen level %` }
+					{ variableId: `target_${sanitized}_level`, name: `${key.display_name} listen level dB` }
 				)
 			}
 		}
@@ -907,7 +940,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 		for (const [index, key] of this.keys.entries()) {
 			const talk = this.getTalkActive(key)
 			const listen = this.getListenActive(key)
-			const level = Math.round(this.getListenLevel(key) * 100)
+			const level = this.formatListenLevelDb(this.getListenLevelDb(key))
 			const sanitized = sanitizeName(key.display_name)
 
 			values[`key_${index}_name`] = key.display_name
@@ -1083,15 +1116,15 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 		}
 	}
 
-	private onListenLevelSet(key: KeyConfig, levelPercent: number): void {
+	private onListenLevelSetDb(key: KeyConfig, levelDb: number): void {
 		if (!key.can_listen) return
-		const linearLevel = clamp(levelPercent, 0, 100) / 100
+		const linearLevel = this.clampListenLevelLinear(key, dbToLinear(levelDb))
 		this.setListenLevelLocal(key, linearLevel)
 		if (key.target_type === 'party_line') {
 			this.send({
 				type: 'set_party_line_listen_level',
 				party_line_id: key.target_id,
-				level: linearLevel * 2,
+				level: linearLevel,
 			})
 		} else {
 			this.send({
@@ -1101,6 +1134,12 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 			})
 		}
 		this.pushVariableValues()
+	}
+
+	private onListenLevelAdjustDb(key: KeyConfig, deltaDb: number): void {
+		if (!key.can_listen) return
+		const nextLevelDb = this.getListenLevelDb(key) + deltaDb
+		this.onListenLevelSetDb(key, nextLevelDb)
 	}
 
 	private onGlobalModeSet(mode: GlobalMode): void {
@@ -1279,8 +1318,21 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 		return this.stateListenLevelMapForKey(key)[key.target_id] ?? 1
 	}
 
+	private getListenLevelDb(key: KeyConfig): number {
+		return linearToDb(this.getListenLevel(key))
+	}
+
 	private setListenLevelLocal(key: KeyConfig, level: number): void {
 		this.stateListenLevelMapForKey(key)[key.target_id] = level
+	}
+
+	private clampListenLevelLinear(key: KeyConfig, level: number): number {
+		return clamp(level, 0, key.target_type === 'party_line' ? 2 : 1)
+	}
+
+	private formatListenLevelDb(levelDb: number): string {
+		if (levelDb <= MIN_LISTEN_LEVEL_DB) return `${MIN_LISTEN_LEVEL_DB}`
+		return levelDb.toFixed(1)
 	}
 
 	private stateTalkMapForKey(key: KeyConfig): Record<string, boolean> {
