@@ -375,12 +375,17 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 	}
 
 	private validateConfig(): string | undefined {
+		const host = this.config.host?.trim() ?? ''
+		const username = this.config.username?.trim() ?? ''
+		const password = this.config.password?.trim() ?? ''
+		const clientHost = this.config.client_host?.trim() ?? ''
+
 		if (this.config.connection_mode === 'server') {
-			if (!this.config.host.trim()) return 'Server host is required'
-			if (!this.config.username.trim()) return 'Username is required'
-			if (!this.config.password.trim()) return 'Password is required'
+			if (!host) return 'Server host is required'
+			if (!username) return 'Username is required'
+			if (!password) return 'Password is required'
 		} else {
-			if (!this.config.client_host.trim()) return 'Client host is required'
+			if (!clientHost) return 'Client host is required'
 		}
 
 		return undefined
@@ -389,11 +394,15 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 	private buildWebSocketUrl(): string {
 		if (this.config.connection_mode === 'server') {
 			const scheme = this.config.server_tls ? 'wss' : 'ws'
-			return `${scheme}://${this.config.host}:${this.config.port}/ws`
+			const host = this.config.host?.trim() ?? 'localhost'
+			const port = this.config.port ?? DEFAULT_SERVER_PORT
+			return `${scheme}://${host}:${port}/ws`
 		}
 
 		const scheme = this.config.client_tls ? 'wss' : 'ws'
-		return `${scheme}://${this.config.client_host}:${this.config.client_port}`
+		const clientHost = this.config.client_host?.trim() ?? 'localhost'
+		const clientPort = this.config.client_port ?? DEFAULT_CLIENT_PORT
+		return `${scheme}://${clientHost}:${clientPort}`
 	}
 
 	private async handleMessage(raw: string): Promise<void> {
