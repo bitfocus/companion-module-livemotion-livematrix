@@ -1,8 +1,4 @@
 import type { CompanionStaticUpgradeScript } from '@companion-module/base'
-import type { LiveMatrixConfig } from './index.js'
+import type { LiveMatrixConfig } from './index'
 
-type LiveMatrixSecrets = {
-	password?: string
-}
-
-export const UpgradeScripts: CompanionStaticUpgradeScript<LiveMatrixConfig, LiveMatrixSecrets>[] = []
+export const upgradeScripts: CompanionStaticUpgradeScript<LiveMatrixConfig>[] = []
