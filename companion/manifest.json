@@ -1,4 +1,5 @@
 {
+  "type": "connection",
   "id": "livematrix",
   "name": "LiveMatrix",
   "shortname": "livematrix",

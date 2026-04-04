@@ -1390,4 +1390,4 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 export default LiveMatrixInstance
 export type { LiveMatrixConfig }
-export { upgradeScripts } from './upgrades.js'
+export { UpgradeScripts } from './upgrades.js'

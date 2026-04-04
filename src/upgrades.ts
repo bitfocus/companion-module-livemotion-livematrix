@@ -5,4 +5,4 @@ type LiveMatrixSecrets = {
 	password?: string
 }
 
-export const upgradeScripts: CompanionStaticUpgradeScript<LiveMatrixConfig, LiveMatrixSecrets>[] = []
+export const UpgradeScripts: CompanionStaticUpgradeScript<LiveMatrixConfig, LiveMatrixSecrets>[] = []
