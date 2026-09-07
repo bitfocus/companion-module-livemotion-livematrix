@@ -3,18 +3,18 @@ import {
 	InstanceStatus,
 	Regex,
 	combineRgb,
-	runEntrypoint,
+	type CompanionFeedbackButtonStyleResult,
 	type CompanionActionDefinitions,
 	type CompanionFeedbackDefinitions,
 	type CompanionOptionValues,
 	type CompanionPresetDefinitions,
-	type CompanionVariableDefinition,
+	type CompanionPresetSection,
+	type CompanionVariableDefinitions,
 	type CompanionVariableValues,
 	type DropdownChoice,
 	type SomeCompanionConfigField,
 } from '@companion-module/base'
-import WebSocket from 'ws'
-import { upgradeScripts } from './upgrades'
+import WebSocket, { type RawData } from 'ws'
 
 type ConnectionMode = 'server' | 'client'
 type GlobalMode = 'talk' | 'mute'
@@ -98,16 +98,27 @@ interface ErrorMessage {
 	message: string
 }
 
-interface LiveMatrixConfig {
+type LiveMatrixConfig = {
 	connection_mode: ConnectionMode
 	host: string
 	port: number
 	username: string
-	password: string
 	server_tls: boolean
 	client_host: string
 	client_port: number
 	client_tls: boolean
+}
+
+type LiveMatrixSecrets = {
+	password?: string
+}
+
+type LiveMatrixManifest = {
+	config: LiveMatrixConfig
+	secrets: LiveMatrixSecrets
+	actions: Record<string, any>
+	feedbacks: Record<string, any>
+	variables: CompanionVariableValues
 }
 
 interface KeyControlState {
@@ -153,10 +164,12 @@ function createEmptyState(): UserState {
 }
 
 function sanitizeName(name: string): string {
-	return name
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, '_')
-		.replace(/^_+|_+$/g, '') || 'unnamed'
+	return (
+		name
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, '_')
+			.replace(/^_+|_+$/g, '') || 'unnamed'
+	)
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -173,15 +186,15 @@ function dbToLinear(levelDb: number): number {
 	return 10 ** (levelDb / 20)
 }
 
-export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
+export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	config!: LiveMatrixConfig
+	secrets!: LiveMatrixSecrets
 	private ws: WebSocket | null = null
 	private reconnectTimer: NodeJS.Timeout | undefined
 	private shouldReconnect = false
 
 	private userId = ''
 	private displayName = ''
-	private deviceId = ''
 	private keys: KeyConfig[] = []
 	private availableUsers: UserInfo[] = []
 	private connectedUsers = new Set<string>()
@@ -194,8 +207,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 	private globalPressing = false
 	private globalPressStart: number | undefined
 
-	async init(config: LiveMatrixConfig): Promise<void> {
+	async init(config: LiveMatrixConfig, _isFirstInit: boolean, secrets: LiveMatrixSecrets): Promise<void> {
 		this.config = config
+		this.secrets = secrets
 		this.setupDefinitions()
 		await this.connect()
 	}
@@ -210,8 +224,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 		await this.disconnect()
 	}
 
-	async configUpdated(config: LiveMatrixConfig): Promise<void> {
+	async configUpdated(config: LiveMatrixConfig, secrets: LiveMatrixSecrets): Promise<void> {
 		this.config = config
+		this.secrets = secrets
 		this.shouldReconnect = false
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer)
@@ -273,7 +288,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 				isVisibleExpression: "$(options:connection_mode) == 'server'",
 			},
 			{
-				type: 'textinput',
+				type: 'secret-text',
 				id: 'password',
 				label: 'Password',
 				width: 6,
@@ -338,16 +353,16 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 				this.send({
 					type: 'login',
 					username: this.config.username,
-					password: this.config.password,
+					password: this.secrets.password,
 				})
 			}
 		})
 
-		ws.on('message', (data) => {
+		ws.on('message', (data: RawData) => {
 			void this.handleMessage(data.toString())
 		})
 
-		ws.on('error', (error) => {
+		ws.on('error', (error: Error) => {
 			const message = error instanceof Error ? error.message : String(error)
 			this.log('error', `WebSocket error: ${message}`)
 			this.updateStatus(InstanceStatus.ConnectionFailure, message)
@@ -393,9 +408,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 	private validateConfig(): string | undefined {
 		const host = this.config.host?.trim() ?? ''
 		const username = this.config.username?.trim() ?? ''
-		const password = this.config.password?.trim() ?? ''
+		const password = this.secrets.password?.trim() ?? ''
 		const clientHost = this.config.client_host?.trim() ?? ''
-
 		if (this.config.connection_mode === 'server') {
 			if (!host) return 'Server host is required'
 			if (!username) return 'Username is required'
@@ -462,11 +476,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 	private handleLoginSuccess(message: LoginSuccessMessage): void {
 		this.userId = message.user_id
 		this.displayName = message.display_name
-		this.deviceId = message.device_id
 		this.availableUsers = message.available_users ?? []
-		this.connectedUsers = new Set(
-			this.availableUsers.filter((user) => user.is_connected).map((user) => user.id)
-		)
+		this.connectedUsers = new Set(this.availableUsers.filter((user) => user.is_connected).map((user) => user.id))
 		this.applyKeys(message.keys ?? [])
 		this.updateStatus(InstanceStatus.Ok)
 
@@ -501,7 +512,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 
 		this.syncLatchStateFromServer()
 		this.pushVariableValues()
-		this.checkFeedbacks()
+		this.checkAllFeedbacks()
 	}
 
 	private handleKeysChanged(message: KeysChangedMessage): void {
@@ -511,19 +522,19 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 	private handleUserConnected(message: UserConnectedMessage): void {
 		this.connectedUsers.add(message.user_id)
 		this.availableUsers = this.availableUsers.map((user) =>
-			user.id === message.user_id ? { ...user, is_connected: true } : user
+			user.id === message.user_id ? { ...user, is_connected: true } : user,
 		)
 		this.pushVariableValues()
-		this.checkFeedbacks()
+		this.checkFeedbacks('user_connected', 'user_disconnected')
 	}
 
 	private handleUserDisconnected(message: UserDisconnectedMessage): void {
 		this.connectedUsers.delete(message.user_id)
 		this.availableUsers = this.availableUsers.map((user) =>
-			user.id === message.user_id ? { ...user, is_connected: false } : user
+			user.id === message.user_id ? { ...user, is_connected: false } : user,
 		)
 		this.pushVariableValues()
-		this.checkFeedbacks()
+		this.checkFeedbacks('user_connected', 'user_disconnected')
 	}
 
 	private handleServerError(message: ErrorMessage): void {
@@ -575,7 +586,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 	private setupDefinitions(): void {
 		this.setActionDefinitions(this.getActionDefinitions())
 		this.setFeedbackDefinitions(this.getFeedbackDefinitions())
-		this.setPresetDefinitions(this.getPresetDefinitions())
+		const { structure, presets } = this.getPresetDefinitions()
+		this.setPresetDefinitions(structure, presets)
 		this.setVariableDefinitions(this.getVariableDefinitions())
 		this.pushVariableValues()
 	}
@@ -780,11 +792,13 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 		}
 	}
 
-	private getPresetDefinitions(): CompanionPresetDefinitions {
-		const presets: CompanionPresetDefinitions = {
+	private getPresetDefinitions(): {
+		structure: CompanionPresetSection<LiveMatrixManifest>[]
+		presets: CompanionPresetDefinitions<LiveMatrixManifest>
+	} {
+		const presets: CompanionPresetDefinitions<LiveMatrixManifest> = {
 			global_button: {
-				type: 'button',
-				category: 'Global',
+				type: 'simple',
 				name: 'Global button',
 				style: {
 					text: 'GLOBAL\n$(livematrix:global_mode)',
@@ -797,6 +811,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 					{
 						feedbackId: 'global_active',
 						options: {},
+						style: {
+							bgcolor: combineRgb(255, 255, 0),
+							color: combineRgb(0, 0, 0),
+						},
 					},
 				],
 				steps: [
@@ -807,58 +825,91 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 				],
 			},
 		}
+		const globalPresets = ['global_button']
+		const talkIndexPresets: string[] = []
+		const listenIndexPresets: string[] = []
+		const talkTargetPresets: string[] = []
+		const listenTargetPresets: string[] = []
 
 		for (const [index, key] of this.keys.entries()) {
 			const targetToken = this.keyTargetToken(key)
 			const safeName = sanitizeName(key.display_name)
 
-			presets[`talk_index_${index}`] = this.createKeyPreset(
-				'Talk Keys (by index)',
+			const talkIndexId = `talk_index_${index}`
+			presets[talkIndexId] = this.createKeyPreset(
 				`Talk key ${index}`,
 				`$(livematrix:key_${index}_name)\nTALK`,
 				'talk',
-				{ selection_mode: 'index', key_index: index }
+				{ selection_mode: 'index', key_index: index },
 			)
-			presets[`listen_index_${index}`] = this.createKeyPreset(
-				'Listen Keys (by index)',
+			talkIndexPresets.push(talkIndexId)
+
+			const listenIndexId = `listen_index_${index}`
+			presets[listenIndexId] = this.createKeyPreset(
 				`Listen key ${index}`,
 				`$(livematrix:key_${index}_name)\nLISTEN`,
 				'listen',
-				{ selection_mode: 'index', key_index: index }
+				{ selection_mode: 'index', key_index: index },
 			)
-			presets[`talk_target_${safeName}_${index}`] = this.createKeyPreset(
-				'Talk Keys (by target)',
+			listenIndexPresets.push(listenIndexId)
+
+			const talkTargetId = `talk_target_${safeName}_${index}`
+			presets[talkTargetId] = this.createKeyPreset(
 				`Talk ${key.display_name}`,
 				`${key.display_name}\nTALK`,
 				'talk',
-				{ selection_mode: 'target', key_target: targetToken }
+				{ selection_mode: 'target', key_target: targetToken },
 			)
-			presets[`listen_target_${safeName}_${index}`] = this.createKeyPreset(
-				'Listen Keys (by target)',
+			talkTargetPresets.push(talkTargetId)
+
+			const listenTargetId = `listen_target_${safeName}_${index}`
+			presets[listenTargetId] = this.createKeyPreset(
 				`Listen ${key.display_name}`,
 				`${key.display_name}\nLISTEN`,
 				'listen',
-				{ selection_mode: 'target', key_target: targetToken }
+				{ selection_mode: 'target', key_target: targetToken },
 			)
+			listenTargetPresets.push(listenTargetId)
 		}
 
-		return presets
+		const structure: CompanionPresetSection<LiveMatrixManifest>[] = [
+			{
+				id: 'global',
+				name: 'Global',
+				definitions: globalPresets,
+			},
+			{
+				id: 'talk-index',
+				name: 'Talk Keys (by index)',
+				definitions: talkIndexPresets,
+			},
+			{
+				id: 'listen-index',
+				name: 'Listen Keys (by index)',
+				definitions: listenIndexPresets,
+			},
+			{
+				id: 'talk-target',
+				name: 'Talk Keys (by target)',
+				definitions: talkTargetPresets,
+			},
+			{
+				id: 'listen-target',
+				name: 'Listen Keys (by target)',
+				definitions: listenTargetPresets,
+			},
+		]
+
+		return { structure, presets }
 	}
 
-	private createKeyPreset(
-		category: string,
-		name: string,
-		text: string,
-		mode: 'talk' | 'listen',
-		options: CompanionOptionValues
-	) {
+	private createKeyPreset(name: string, text: string, mode: 'talk' | 'listen', options: CompanionOptionValues) {
 		const feedbackId = mode === 'talk' ? 'talk_active' : 'listen_active'
 		const downAction = mode === 'talk' ? 'talk_down' : 'listen_down'
 		const upAction = mode === 'talk' ? 'talk_up' : 'listen_up'
 
 		return {
-			type: 'button' as const,
-			category,
+			type: 'simple' as const,
 			name,
 			style: {
 				text,
@@ -867,7 +918,13 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 				bgcolor: combineRgb(0, 0, 0),
 				alignment: 'center:center' as const,
 			},
-			feedbacks: [{ feedbackId, options }],
+			feedbacks: [
+				{
+					feedbackId,
+					options,
+					style: this.getPresetFeedbackStyle(mode),
+				},
+			],
 			steps: [
 				{
 					down: [{ actionId: downAction, options }],
@@ -877,39 +934,47 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 		}
 	}
 
-	private getVariableDefinitions(): CompanionVariableDefinition[] {
-		const variables: CompanionVariableDefinition[] = [
-			{ variableId: 'user_id', name: 'Logged-in user ID' },
-			{ variableId: 'display_name', name: 'Logged-in display name' },
-			{ variableId: 'connected', name: 'Connected' },
-			{ variableId: 'global_mode', name: 'Global mode' },
-			{ variableId: 'global_active', name: 'Global active' },
-			{ variableId: 'key_count', name: 'Key count' },
-		]
+	private getPresetFeedbackStyle(mode: 'talk' | 'listen'): CompanionFeedbackButtonStyleResult {
+		return mode === 'talk'
+			? {
+					bgcolor: combineRgb(255, 0, 0),
+					color: combineRgb(255, 255, 255),
+				}
+			: {
+					bgcolor: combineRgb(0, 180, 0),
+					color: combineRgb(255, 255, 255),
+				}
+	}
+
+	private getVariableDefinitions(): CompanionVariableDefinitions {
+		const variables: CompanionVariableDefinitions = {
+			user_id: { name: 'Logged-in user ID' },
+			display_name: { name: 'Logged-in display name' },
+			connected: { name: 'Connected' },
+			global_mode: { name: 'Global mode' },
+			global_active: { name: 'Global active' },
+			key_count: { name: 'Key count' },
+		}
 
 		const seenTargetNames = new Set<string>()
 		for (const [index, key] of this.keys.entries()) {
-			variables.push(
-				{ variableId: `key_${index}_name`, name: `Key ${index} display name` },
-				{ variableId: `key_${index}_target_type`, name: `Key ${index} target type` },
-				{ variableId: `key_${index}_target_id`, name: `Key ${index} target ID` },
-				{ variableId: `key_${index}_talk`, name: `Key ${index} talk active` },
-				{ variableId: `key_${index}_listen`, name: `Key ${index} listen active` },
-				{ variableId: `key_${index}_level`, name: `Key ${index} listen level dB` },
-				{ variableId: `tid_${key.target_id}_name`, name: `${key.display_name} name` },
-				{ variableId: `tid_${key.target_id}_talk`, name: `${key.display_name} talk active` },
-				{ variableId: `tid_${key.target_id}_listen`, name: `${key.display_name} listen active` },
-				{ variableId: `tid_${key.target_id}_level`, name: `${key.display_name} listen level dB` }
-			)
+			variables[`key_${index}_name`] = { name: `Key ${index} display name` }
+			variables[`key_${index}_target_type`] = { name: `Key ${index} target type` }
+			variables[`key_${index}_target_id`] = { name: `Key ${index} target ID` }
+			variables[`key_${index}_talk`] = { name: `Key ${index} talk active` }
+			variables[`key_${index}_listen`] = { name: `Key ${index} listen active` }
+			variables[`key_${index}_level`] = { name: `Key ${index} listen level dB` }
+			variables[`tid_${key.target_id}_name`] = { name: `${key.display_name} name` }
+			variables[`tid_${key.target_id}_talk`] = { name: `${key.display_name} talk active` }
+			variables[`tid_${key.target_id}_listen`] = { name: `${key.display_name} listen active` }
+			variables[`tid_${key.target_id}_level`] = { name: `${key.display_name} listen level dB` }
 
 			const sanitized = sanitizeName(key.display_name)
 			if (!seenTargetNames.has(sanitized)) {
 				seenTargetNames.add(sanitized)
-				variables.push(
-					{ variableId: `target_${sanitized}_talk`, name: `${key.display_name} talk active` },
-					{ variableId: `target_${sanitized}_listen`, name: `${key.display_name} listen active` },
-					{ variableId: `target_${sanitized}_level`, name: `${key.display_name} listen level dB` }
-				)
+				variables[`target_${sanitized}_talk`] = { name: `${key.display_name} talk active` }
+				variables[`target_${sanitized}_listen`] = { name: `${key.display_name} listen active` }
+				variables[`target_${sanitized}_level`] = { name: `${key.display_name} listen level dB` }
 			}
 		}
 
@@ -1033,10 +1098,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 
 		this.talkControlState.pressing.set(key.target_id, false)
 		if (key.allow_talk_latching && wasShortPress) {
-			this.talkControlState.latched.set(
-				key.target_id,
-				!(this.talkControlState.latched.get(key.target_id) ?? false)
-			)
+			this.talkControlState.latched.set(key.target_id, !(this.talkControlState.latched.get(key.target_id) ?? false))
 		}
 
 		const newEffective = this.getEffectiveState(this.talkControlState, key.target_id)
@@ -1062,10 +1124,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 
 		this.listenControlState.pressing.set(key.target_id, false)
 		if (key.allow_listen_latching && wasShortPress) {
-			this.listenControlState.latched.set(
-				key.target_id,
-				!(this.listenControlState.latched.get(key.target_id) ?? false)
-			)
+			this.listenControlState.latched.set(key.target_id, !(this.listenControlState.latched.get(key.target_id) ?? false))
 		}
 
 		const newEffective = this.getEffectiveState(this.listenControlState, key.target_id)
@@ -1145,8 +1204,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 	}
 
 	private onGlobalUp(): void {
-		const wasShortPress =
-			this.globalPressStart !== undefined && Date.now() - this.globalPressStart < TAP_THRESHOLD_MS
+		const wasShortPress = this.globalPressStart !== undefined && Date.now() - this.globalPressStart < TAP_THRESHOLD_MS
 		this.globalPressing = false
 		if (wasShortPress) {
 			this.globalLatched = !this.globalLatched
@@ -1189,7 +1247,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 	private setTalkActive(
 		key: KeyConfig,
 		active: boolean,
-		options: { forceSend?: boolean; momentary?: boolean } = {}
+		options: { forceSend?: boolean; momentary?: boolean } = {},
 	): void {
 		const current = this.getTalkActive(key)
 		if (current === active && !options.forceSend) return
@@ -1228,7 +1286,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 	private setListenActive(
 		key: KeyConfig,
 		active: boolean,
-		options: { forceSend?: boolean; momentary?: boolean } = {}
+		options: { forceSend?: boolean; momentary?: boolean } = {},
 	): void {
 		const current = this.getListenActive(key)
 		if (current === active && !options.forceSend) return
@@ -1273,7 +1331,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 					type: messageType,
 					target_user: targetId,
 				})
-			}, KEEP_ALIVE_INTERVAL_MS)
+			}, KEEP_ALIVE_INTERVAL_MS),
 		)
 	}
 
@@ -1360,7 +1418,6 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 	private resetSession(): void {
 		this.userId = ''
 		this.displayName = ''
-		this.deviceId = ''
 		this.keys = []
 		this.availableUsers = []
 		this.connectedUsers.clear()
@@ -1374,6 +1431,6 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixConfig> {
 	}
 }
 
-runEntrypoint(LiveMatrixInstance, upgradeScripts)
-
+export default LiveMatrixInstance
 export type { LiveMatrixConfig }
+export { UpgradeScripts } from './upgrades.js'

@@ -1,4 +1,5 @@
 {
+  "type": "connection",
   "id": "livematrix",
   "name": "LiveMatrix",
   "shortname": "livematrix",
@@ -9,9 +10,9 @@
   "bugs": "",
   "maintainers": [],
   "runtime": {
-    "type": "node18",
+    "type": "node22",
     "api": "nodejs-ipc",
-    "apiVersion": "1.0.0",
+    "apiVersion": "2.1.3",
     "entrypoint": "../dist/index.js"
   },
   "legacyIds": [],
