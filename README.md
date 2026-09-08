@@ -7,7 +7,7 @@ hardware panels.
 The module is control-only: it speaks the LiveMatrix WebSocket protocol on `/ws`
 and never negotiates WebRTC, so adding a panel does not create an audio pipeline
 on the server. It connects either straight to a LiveMatrix server or to the
-local proxy exposed by a logged-in LiveMatrix desktop client.
+local control API exposed by a logged-in LiveMatrix desktop client.
 
 ## What it gives you
 

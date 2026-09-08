@@ -366,7 +366,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				default: 'server',
 				choices: [
 					{ id: 'server', label: 'Direct to server' },
-					{ id: 'client', label: 'Via local client proxy' },
+					{ id: 'client', label: "Via a client's control API" },
 				],
 			},
 			{
@@ -415,7 +415,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			{
 				type: 'textinput',
 				id: 'client_host',
-				label: 'Client host',
+				label: 'Control API host',
 				width: 6,
 				default: 'localhost',
 				regex: Regex.HOSTNAME,
@@ -424,7 +424,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			{
 				type: 'number',
 				id: 'client_port',
-				label: 'Client port',
+				label: 'Control API port',
 				width: 4,
 				default: DEFAULT_CLIENT_PORT,
 				min: 1,
@@ -531,7 +531,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			if (!username) return 'Username is required'
 			if (!password) return 'Password is required'
 		} else {
-			if (!clientHost) return 'Client host is required'
+			if (!clientHost) return 'Control API host is required'
 		}
 
 		return undefined
