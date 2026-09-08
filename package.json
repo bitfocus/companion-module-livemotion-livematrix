@@ -14,7 +14,7 @@
 	"scripts": {
 		"build": "rimraf dist && tsc --project tsconfig.build.json",
 		"watch": "tsc --project tsconfig.build.json --watch",
-		"package": "pnpm build && companion-module-build"
+		"package": "npm run build && companion-module-build"
 	},
 	"engines": {
 		"node": "^22.20 || ^26.5"
