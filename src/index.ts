@@ -24,6 +24,14 @@ type SetMode = 'toggle' | 'on' | 'off'
 type KeySelectionMode = 'index' | 'target' | 'selected'
 type PressBehaviour = 'auto' | 'momentary' | 'latch'
 type LatchMode = 'off' | 'momentary' | 'latched'
+type KeyField = 'talk' | 'listen'
+type Hold = 'latched' | 'momentary'
+
+interface MomentaryHold {
+	key: { target_type: string; target_id: string }
+	talk: boolean
+	listen: boolean
+}
 
 type Message = Record<string, unknown>
 
@@ -65,15 +73,17 @@ interface LoginSuccessMessage {
 	device_id: string
 	keys: KeyConfig[]
 	available_users: UserInfo[]
+	/// How often a held key has to be restated, and how long it survives without that.
+	momentary_heartbeat_interval_ms?: number
+	momentary_timeout_ms?: number
 }
 
 interface StateUpdateMessage {
 	type: 'state_update'
-	user_id?: string
-	revision?: number
-	origin?: Record<string, unknown>
-	last_updated_at?: string
+	/// What audio is actually doing: latched or held.
 	state: UserState
+	/// The same snapshot with every held press removed.
+	latched?: UserState
 }
 
 interface KeysChangedMessage {
@@ -129,11 +139,11 @@ interface KeyControlState {
 	latched: Map<string, boolean>
 	pressing: Map<string, boolean>
 	pressStart: Map<string, number>
-	keepAliveTimers: Map<string, NodeJS.Timeout>
 }
 
 const TAP_THRESHOLD_MS = 300
-const KEEP_ALIVE_INTERVAL_MS = 30_000
+/// Fallback until `login_success` tells us what the server actually wants.
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000
 const DEFAULT_SERVER_PORT = 55678
 const DEFAULT_CLIENT_PORT = 9100
 const MIN_LISTEN_LEVEL_DB = -100
@@ -215,11 +225,16 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	private availableUsers: UserInfo[] = []
 	private connectedUsers = new Set<string>()
 	private state: UserState = createEmptyState()
-	private stateRevision = 0
+	/** The latched layer of the last state update, when the server sends one. */
+	private latchedState: UserState | undefined
 
 	private talkControlState: KeyControlState = this.createControlState()
 	private listenControlState: KeyControlState = this.createControlState()
 	private selectedKeyToken: string | undefined
+	/** Presses we are holding, keyed by target token, restated on the heartbeat. */
+	private heldKeys = new Map<string, MomentaryHold>()
+	private heartbeatTimer: NodeJS.Timeout | undefined
+	private heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS
 	private globalLatched = false
 	private globalPressing = false
 	private globalPressStart: number | undefined
@@ -237,7 +252,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			clearTimeout(this.reconnectTimer)
 			this.reconnectTimer = undefined
 		}
-		this.clearAllKeepAliveTimers()
+		this.clearHolds()
 		await this.disconnect()
 	}
 
@@ -249,7 +264,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			clearTimeout(this.reconnectTimer)
 			this.reconnectTimer = undefined
 		}
-		this.clearAllKeepAliveTimers()
+		this.clearHolds()
 		await this.disconnect()
 		this.resetSession()
 		this.setupDefinitions()
@@ -347,7 +362,6 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			latched: new Map(),
 			pressing: new Map(),
 			pressStart: new Map(),
-			keepAliveTimers: new Map(),
 		}
 	}
 
@@ -389,7 +403,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			if (this.ws === ws) {
 				this.ws = null
 			}
-			this.clearAllKeepAliveTimers()
+			this.clearHolds()
 			if (this.shouldReconnect) {
 				this.updateStatus(InstanceStatus.Disconnected)
 				this.scheduleReconnect()
@@ -496,6 +510,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.availableUsers = message.available_users ?? []
 		this.connectedUsers = new Set(this.availableUsers.filter((user) => user.is_connected).map((user) => user.id))
 		this.applyKeys(message.keys ?? [])
+		// The server advertises its own lease so client and server cannot drift
+		// apart on how often a held key has to be restated.
+		this.heartbeatIntervalMs = message.momentary_heartbeat_interval_ms ?? DEFAULT_HEARTBEAT_INTERVAL_MS
 		this.updateStatus(InstanceStatus.Ok)
 
 		if (this.config.connection_mode === 'server') {
@@ -513,23 +530,27 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	}
 
 	private handleStateUpdate(message: StateUpdateMessage): void {
-		const revision = message.revision ?? 0
-		if (revision < this.stateRevision) return
-		this.stateRevision = revision
-		this.state = {
-			talk_active: { ...(message.state.talk_active ?? {}) },
-			listen_active: { ...(message.state.listen_active ?? {}) },
-			listen_level: { ...(message.state.listen_level ?? {}) },
-			global_mode: message.state.global_mode ?? 'mute',
-			global_active: message.state.global_active ?? false,
-			party_line_talk_active: { ...(message.state.party_line_talk_active ?? {}) },
-			party_line_listen_active: { ...(message.state.party_line_listen_active ?? {}) },
-			party_line_listen_level: { ...(message.state.party_line_listen_level ?? {}) },
-		}
+		this.state = this.readUserState(message.state)
+		// The effective state alone cannot say whether a key is on because it is
+		// latched or because someone is leaning on it. The server tells us both.
+		this.latchedState = message.latched ? this.readUserState(message.latched) : undefined
 
 		this.syncLatchStateFromServer()
 		this.pushVariableValues()
 		this.checkAllFeedbacks()
+	}
+
+	private readUserState(raw: UserState | undefined): UserState {
+		return {
+			talk_active: { ...(raw?.talk_active ?? {}) },
+			listen_active: { ...(raw?.listen_active ?? {}) },
+			listen_level: { ...(raw?.listen_level ?? {}) },
+			global_mode: raw?.global_mode ?? 'mute',
+			global_active: raw?.global_active ?? false,
+			party_line_talk_active: { ...(raw?.party_line_talk_active ?? {}) },
+			party_line_listen_active: { ...(raw?.party_line_listen_active ?? {}) },
+			party_line_listen_level: { ...(raw?.party_line_listen_level ?? {}) },
+		}
 	}
 
 	private handleKeysChanged(message: KeysChangedMessage): void {
@@ -589,16 +610,37 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		for (const key of this.keys) {
 			const targetId = key.target_id
 			if (!this.talkControlState.pressing.get(targetId)) {
-				this.talkControlState.latched.set(targetId, this.getTalkActive(key))
+				this.talkControlState.latched.set(targetId, this.isLatched(key, 'talk'))
 			}
 			if (!this.listenControlState.pressing.get(targetId)) {
-				this.listenControlState.latched.set(targetId, this.getListenActive(key))
+				this.listenControlState.latched.set(targetId, this.isLatched(key, 'listen'))
 			}
 		}
 
 		if (!this.globalPressing) {
 			this.globalLatched = this.state.global_active
 		}
+	}
+
+	/**
+	 * Whether the server holds this half latched on, as opposed to it merely
+	 * being held down by somebody. Falls back to the effective state on servers
+	 * that do not send the latched snapshot.
+	 */
+	private isLatched(key: KeyConfig, field: KeyField): boolean {
+		const snapshot = this.latchedState
+		if (!snapshot) {
+			return field === 'talk' ? this.getTalkActive(key) : this.getListenActive(key)
+		}
+		const map =
+			field === 'talk'
+				? key.target_type === 'party_line'
+					? snapshot.party_line_talk_active
+					: snapshot.talk_active
+				: key.target_type === 'party_line'
+					? snapshot.party_line_listen_active
+					: snapshot.listen_active
+		return map[key.target_id] ?? false
 	}
 
 	private setupDefinitions(): void {
@@ -1649,8 +1691,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 		const newEffective = this.getEffectiveState(this.talkControlState, key.target_id)
 		if (wasMomentary && newEffective && (this.talkControlState.latched.get(key.target_id) ?? false)) {
-			this.stopKeepAlive(this.talkControlState, key.target_id)
+			// Hand the press over to the latched layer before letting go of it,
+			// so the key never drops out for a moment in between.
 			this.setTalkActive(key, true, { forceSend: true, momentary: false })
+			this.sendKeyState(key, 'talk', 'momentary', false)
 		} else {
 			this.setTalkActive(key, newEffective)
 		}
@@ -1683,8 +1727,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 		const newEffective = this.getEffectiveState(this.listenControlState, key.target_id)
 		if (wasMomentary && newEffective && (this.listenControlState.latched.get(key.target_id) ?? false)) {
-			this.stopKeepAlive(this.listenControlState, key.target_id)
 			this.setListenActive(key, true, { forceSend: true, momentary: false })
+			this.sendKeyState(key, 'listen', 'momentary', false)
 		} else {
 			this.setListenActive(key, newEffective)
 		}
@@ -1709,11 +1753,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	}
 
 	/** Whether a key is off, held down momentarily, or latched on. */
-	private getLatchMode(key: KeyConfig, kind: 'talk' | 'listen'): LatchMode {
-		const controlState = kind === 'talk' ? this.talkControlState : this.listenControlState
+	private getLatchMode(key: KeyConfig, kind: KeyField): LatchMode {
 		const active = kind === 'talk' ? this.getTalkActive(key) : this.getListenActive(key)
 		if (!active) return 'off'
-		return controlState.latched.get(key.target_id) ? 'latched' : 'momentary'
+		return this.isLatched(key, kind) ? 'latched' : 'momentary'
 	}
 
 	private onSetKeyMode(key: KeyConfig, kind: 'talk' | 'listen', mode: SetMode): void {
@@ -1749,19 +1792,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		if (!key.can_listen) return
 		const linearLevel = this.clampListenLevelLinear(key, dbToLinear(levelDb))
 		this.setListenLevelLocal(key, linearLevel)
-		if (key.target_type === 'party_line') {
-			this.send({
-				type: 'set_party_line_listen_level',
-				party_line_id: key.target_id,
-				level: linearLevel,
-			})
-		} else {
-			this.send({
-				type: 'set_listen_level',
-				target_user: key.target_id,
-				level: linearLevel,
-			})
-		}
+		this.send({ type: 'set_key_level', key: this.keyRef(key), level: linearLevel })
 		this.pushVariableValues()
 	}
 
@@ -1839,25 +1870,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				(this.talkControlState.pressing.get(key.target_id) ?? false) &&
 				!(this.talkControlState.latched.get(key.target_id) ?? false))
 
-		if (key.target_type === 'party_line') {
-			this.send({
-				type: 'set_party_line_talk_state',
-				party_line_id: key.target_id,
-				active,
-			})
-		} else {
-			this.send({
-				type: 'set_talk_state',
-				target_user: key.target_id,
-				active,
-				...(momentary ? { momentary: true } : {}),
-			})
-			if (momentary) {
-				this.startKeepAlive(this.talkControlState, key.target_id, 'talk_keep_alive')
-			} else {
-				this.stopKeepAlive(this.talkControlState, key.target_id)
-			}
-		}
+		this.sendKeyState(key, 'talk', momentary ? 'momentary' : 'latched', active)
 
 		this.pushVariableValues()
 		this.checkFeedbacks('talk_active', 'talk_latched', 'talk_momentary')
@@ -1878,60 +1891,78 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				(this.listenControlState.pressing.get(key.target_id) ?? false) &&
 				!(this.listenControlState.latched.get(key.target_id) ?? false))
 
-		if (key.target_type === 'party_line') {
-			this.send({
-				type: 'set_party_line_listen_state',
-				party_line_id: key.target_id,
-				active,
-			})
-		} else {
-			this.send({
-				type: 'set_listen_state',
-				target_user: key.target_id,
-				active,
-				...(momentary ? { momentary: true } : {}),
-			})
-			if (momentary) {
-				this.startKeepAlive(this.listenControlState, key.target_id, 'listen_keep_alive')
-			} else {
-				this.stopKeepAlive(this.listenControlState, key.target_id)
-			}
-		}
+		this.sendKeyState(key, 'listen', momentary ? 'momentary' : 'latched', active)
 
 		this.pushVariableValues()
 		this.checkFeedbacks('listen_active', 'listen_latched', 'listen_momentary')
 	}
 
-	private startKeepAlive(controlState: KeyControlState, targetId: string, messageType: string): void {
-		this.stopKeepAlive(controlState, targetId)
-		controlState.keepAliveTimers.set(
-			targetId,
-			setInterval(() => {
-				this.send({
-					type: messageType,
-					target_user: targetId,
-				})
-			}, KEEP_ALIVE_INTERVAL_MS),
-		)
+	/**
+	 * Every talk/listen change goes out as one `set_key_state`, whatever the key
+	 * points at. `hold` picks the layer: `latched` is an explicit on/off the
+	 * server persists, `momentary` is a press we then have to keep renewing.
+	 */
+	private sendKeyState(key: KeyConfig, field: KeyField, hold: Hold, active: boolean): void {
+		if (hold === 'momentary') {
+			this.recordHold(key, field, active)
+		}
+		this.send({
+			type: 'set_key_state',
+			key: this.keyRef(key),
+			field,
+			hold,
+			active,
+		})
 	}
 
-	private stopKeepAlive(controlState: KeyControlState, targetId: string): void {
-		const timer = controlState.keepAliveTimers.get(targetId)
-		if (timer) {
-			clearInterval(timer)
-			controlState.keepAliveTimers.delete(targetId)
-		}
+	private keyRef(key: KeyConfig): { target_type: string; target_id: string } {
+		return { target_type: key.target_type, target_id: key.target_id }
 	}
 
-	private clearAllKeepAliveTimers(): void {
-		for (const timer of this.talkControlState.keepAliveTimers.values()) {
-			clearInterval(timer)
+	/**
+	 * Track what we are holding so the heartbeat can restate it. The server
+	 * drops presses it stops hearing about, which is what stops a panel that
+	 * crashes mid-press from leaving a mic open.
+	 */
+	private recordHold(key: KeyConfig, field: KeyField, active: boolean): void {
+		const token = this.keyTargetToken(key)
+		const current = this.heldKeys.get(token)
+		const talk = field === 'talk' ? active : (current?.talk ?? false)
+		const listen = field === 'listen' ? active : (current?.listen ?? false)
+
+		if (talk || listen) {
+			this.heldKeys.set(token, { key: this.keyRef(key), talk, listen })
+		} else {
+			this.heldKeys.delete(token)
 		}
-		for (const timer of this.listenControlState.keepAliveTimers.values()) {
-			clearInterval(timer)
+		this.syncHeartbeat()
+	}
+
+	/** Run the heartbeat exactly while something is held, and no longer. */
+	private syncHeartbeat(): void {
+		if (this.heldKeys.size === 0) {
+			if (this.heartbeatTimer) {
+				clearInterval(this.heartbeatTimer)
+				this.heartbeatTimer = undefined
+			}
+			return
 		}
-		this.talkControlState.keepAliveTimers.clear()
-		this.listenControlState.keepAliveTimers.clear()
+		this.heartbeatTimer ??= setInterval(() => {
+			if (this.heldKeys.size === 0) return
+			this.send({ type: 'momentary_heartbeat', held: [...this.heldKeys.values()] })
+		}, this.heartbeatIntervalMs)
+	}
+
+	/**
+	 * Forget every press. The server does the same for a client that goes away,
+	 * so a reconnecting module must not claim to still be holding anything.
+	 */
+	private clearHolds(): void {
+		this.heldKeys.clear()
+		if (this.heartbeatTimer) {
+			clearInterval(this.heartbeatTimer)
+			this.heartbeatTimer = undefined
+		}
 	}
 
 	private getTalkActive(key: KeyConfig): boolean {
@@ -2002,7 +2033,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.availableUsers = []
 		this.connectedUsers.clear()
 		this.state = createEmptyState()
-		this.stateRevision = 0
+		this.latchedState = undefined
 		this.talkControlState = this.createControlState()
 		this.listenControlState = this.createControlState()
 		this.globalLatched = false
