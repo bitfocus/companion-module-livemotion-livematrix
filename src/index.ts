@@ -4,7 +4,6 @@ import {
 	InstanceStatus,
 	Regex,
 	combineRgb,
-	type CompanionFeedbackButtonStyleResult,
 	type CompanionActionDefinitions,
 	type CompanionFeedbackDefinitions,
 	type CompanionOptionValues,
@@ -163,6 +162,13 @@ const DOUBLE_TAP_SETTLE_MS = 250
  * not speech that gets clipped, but set it to 0 to open the mic on the press.
  */
 const PRESS_SETTLE_MS = 120
+/** How long a listen key must be held before it takes the selection. */
+const LONG_PRESS_SELECT_MS = 500
+
+const TALK_ACCENT = combineRgb(255, 40, 40)
+const TALK_SHADOW = combineRgb(24, 0, 0)
+const LISTEN_ACCENT = combineRgb(0, 220, 90)
+const LISTEN_SHADOW = combineRgb(0, 20, 8)
 /// Fallback until `login_success` tells us what the server actually wants.
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000
 const DEFAULT_SERVER_PORT = 55678
@@ -258,6 +264,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	private settleTimers = new Map<string, NodeJS.Timeout>()
 	/** Keys whose second tap has begun, so this press must not drive talk. */
 	private secondTapInProgress = new Set<string>()
+	/** Listen keys holding the selection for as long as they are held down. */
+	private selectHoldTimers = new Map<string, NodeJS.Timeout>()
+	/** What was selected before a listen key borrowed the selection. */
+	private selectionBeforeHold = new Map<string, string | undefined>()
 	/** Presses waiting out PRESS_SETTLE_MS before they open the mic. */
 	private pressTimers = new Map<string, NodeJS.Timeout>()
 	/** Keys whose press actually reached the server, so we know what to let go of. */
@@ -762,20 +772,48 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 						label: 'Also select this key',
 						default: true,
 					},
+					{
+						type: 'checkbox' as const,
+						id: 'long_press_selects',
+						label: 'Long press selects this key',
+						tooltip:
+							'Holding the key makes it the selected key for as long as it is held, so the volume controls act on it, and hands the selection back on release. A held key does not latch either way.',
+						default: false,
+					},
 				],
 				callback: async (action) => {
 					const key = this.resolveKey(action.options)
 					if (!key) return
 					if (action.options.also_select !== false) this.selectKey(key)
-					this.onListenDown(key, this.readPressBehaviour(action.options))
+					this.onListenDown(
+						key,
+						this.readPressBehaviour(action.options),
+						action.options.long_press_selects === true,
+					)
 				},
 			},
 			listen_up: {
 				name: 'Listen key up',
-				options: [...this.getKeySelectorOptions(), this.getPressBehaviourOption()],
+				options: [
+					...this.getKeySelectorOptions(),
+					this.getPressBehaviourOption(),
+					{
+						type: 'checkbox' as const,
+						id: 'long_press_selects',
+						label: 'Long press selects this key',
+						tooltip:
+							'Holding the key makes it the selected key for as long as it is held, so the volume controls act on it, and hands the selection back on release. A held key does not latch either way.',
+						default: false,
+					},
+				],
 				callback: async (action) => {
 					const key = this.resolveKey(action.options)
-					if (key) this.onListenUp(key, this.readPressBehaviour(action.options))
+					if (key)
+						this.onListenUp(
+							key,
+							this.readPressBehaviour(action.options),
+							action.options.long_press_selects === true,
+						)
 				},
 			},
 			listen_set: {
@@ -1086,37 +1124,33 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			keyPresets.push(keyId)
 
 			const talkIndexId = `talk_index_${index}`
-			presets[talkIndexId] = this.createKeyPreset(
-				`Talk key ${index}`,
-				`$(livematrix:key_${index}_name)\nTALK`,
+			presets[talkIndexId] = this.createSideKeyPreset(
 				'talk',
+				`Talk key ${index}`,
 				this.presetKeyOptions('index', { index, target: targetToken }),
 			)
 			talkIndexPresets.push(talkIndexId)
 
 			const listenIndexId = `listen_index_${index}`
-			presets[listenIndexId] = this.createKeyPreset(
-				`Listen key ${index}`,
-				`$(livematrix:key_${index}_name)\nLISTEN`,
+			presets[listenIndexId] = this.createSideKeyPreset(
 				'listen',
+				`Listen key ${index}`,
 				this.presetKeyOptions('index', { index, target: targetToken }),
 			)
 			listenIndexPresets.push(listenIndexId)
 
 			const talkTargetId = `talk_target_${safeName}_${index}`
-			presets[talkTargetId] = this.createKeyPreset(
-				`Talk ${key.display_name}`,
-				`${key.display_name}\nTALK`,
+			presets[talkTargetId] = this.createSideKeyPreset(
 				'talk',
+				`Talk ${key.display_name}`,
 				this.presetKeyOptions('target', { index, target: targetToken }),
 			)
 			talkTargetPresets.push(talkTargetId)
 
 			const listenTargetId = `listen_target_${safeName}_${index}`
-			presets[listenTargetId] = this.createKeyPreset(
-				`Listen ${key.display_name}`,
-				`${key.display_name}\nLISTEN`,
+			presets[listenTargetId] = this.createSideKeyPreset(
 				'listen',
+				`Listen ${key.display_name}`,
 				this.presetKeyOptions('target', { index, target: targetToken }),
 			)
 			listenTargetPresets.push(listenTargetId)
@@ -1177,6 +1211,197 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	 * label stays readable, and read as a saturated edge at the outside.
 	 * A bar along the bottom shows the listen level.
 	 */
+	/** The listen level, drawn as a rail along the bottom of a key. */
+	private levelBarElement() {
+		return {
+			id: 'level-bar',
+			type: 'gauge' as const,
+			name: 'Listen level',
+			x: 8,
+			y: 84,
+			width: 84,
+			height: 8,
+			orientation: 'horizontal' as const,
+			value: this.expr<number>('$(local:level)'),
+			min: MIN_LISTEN_LEVEL_DB_DISPLAY,
+			max: MAX_LISTEN_LEVEL_DB,
+			fillEnabled: true,
+			roundedEnds: true,
+			trackStyle: 'dimmed' as const,
+			// How much colour the unfilled rail keeps; low so the fill reads as a level.
+			trackAmount: 18,
+			multiColour: true,
+			stops: [
+				{ value: MIN_LISTEN_LEVEL_DB_DISPLAY, color: combineRgb(70, 130, 180), gradient: true },
+				{ value: 0, color: combineRgb(200, 225, 255), gradient: true },
+				{ value: MAX_LISTEN_LEVEL_DB, color: combineRgb(255, 190, 60), gradient: false },
+			],
+		}
+	}
+
+	/**
+	 * Selection is shown as a frame around the level rail rather than around the
+	 * whole key: the selection only decides which key the volume controls act on,
+	 * so it belongs next to the level rather than over the talk and listen state.
+	 */
+	private selectedBarBorderElement() {
+		return {
+			id: 'level-border',
+			type: 'box' as const,
+			name: 'Selected',
+			x: 4,
+			y: 80,
+			width: 92,
+			height: 16,
+			// Transparent fill: opacity would fade the border away with it.
+			color: combineRgb(0, 0, 0, 0),
+			borderWidth: 2,
+			borderColor: combineRgb(255, 255, 255),
+			borderPosition: 'inside' as const,
+			enabled: false,
+		}
+	}
+
+	/**
+	 * A key for one half of an intercom key. It carries its colour as a border at
+	 * rest and fills with it when active, brightest at the edges and darkest
+	 * through the middle so the name stays readable either way.
+	 */
+	private createSideKeyPreset(mode: KeyField, name: string, keyOptions: CompanionOptionValues) {
+		const talk = mode === 'talk'
+		const accent = talk ? TALK_ACCENT : LISTEN_ACCENT
+		const shadow = talk ? TALK_SHADOW : LISTEN_SHADOW
+		const showLevel = !talk
+
+		return {
+			type: 'layered' as const,
+			name,
+			canvas: { decoration: ButtonGraphicsDecorationType.None },
+			elements: [
+				{
+					id: 'fill',
+					type: 'gauge' as const,
+					name: `${talk ? 'Talk' : 'Listen'} fill`,
+					x: 0,
+					y: 0,
+					width: 100,
+					height: 100,
+					orientation: 'horizontal' as const,
+					value: 100,
+					min: 0,
+					max: 100,
+					fillEnabled: true,
+					multiColour: true,
+					trackStyle: 'transparent' as const,
+					trackAmount: 0,
+					enabled: false,
+					stops: [
+						{ value: 0, color: accent, gradient: true },
+						{ value: 50, color: shadow, gradient: true },
+						{ value: 100, color: accent, gradient: true },
+					],
+				},
+				{
+					id: 'border',
+					type: 'box' as const,
+					name: 'Key colour',
+					x: 0,
+					y: 0,
+					width: 100,
+					height: 100,
+					color: combineRgb(0, 0, 0, 0),
+					borderWidth: 4,
+					borderColor: accent,
+					borderPosition: 'inside' as const,
+				},
+				{
+					id: 'label',
+					type: 'text' as const,
+					name: 'Key name',
+					x: 6,
+					y: showLevel ? 12 : 6,
+					width: 88,
+					height: showLevel ? 62 : 88,
+					text: this.expr<string>('$(local:name)'),
+					fontsize: 32,
+					fontsizeAllowShrink: true,
+					weight: 'bold' as const,
+					color: combineRgb(255, 255, 255),
+					halign: 'center' as const,
+					valign: 'center' as const,
+				},
+				...(showLevel ? [this.levelBarElement(), this.selectedBarBorderElement()] : []),
+			],
+			localVariables: [
+				{
+					variableName: 'name',
+					variableType: 'feedback' as const,
+					feedbackId: 'key_name' as const,
+					options: keyOptions,
+				},
+				...(showLevel
+					? [
+							{
+								variableName: 'level',
+								variableType: 'feedback' as const,
+								feedbackId: 'key_listen_level_db' as const,
+								options: keyOptions,
+							},
+						]
+					: []),
+			],
+			feedbacks: [
+				{
+					feedbackId: (talk ? 'talk_active' : 'listen_active') as 'talk_active' | 'listen_active',
+					options: keyOptions,
+					styleOverrides: [
+						{ elementId: 'fill', elementProperty: 'enabled', override: this.overrideValue(true) },
+					],
+				},
+				...(showLevel
+					? [
+							{
+								feedbackId: 'key_selected' as const,
+								options: keyOptions,
+								styleOverrides: [
+									{
+										elementId: 'level-border',
+										elementProperty: 'enabled',
+										override: this.overrideValue(true),
+									},
+								],
+							},
+						]
+					: []),
+			],
+			steps: [
+				{
+					down: [
+						{
+							actionId: (talk ? 'talk_down' : 'listen_down') as 'talk_down' | 'listen_down',
+							options: talk
+								? { ...keyOptions, press_behaviour: 'auto', also_select: true }
+								: {
+										...keyOptions,
+										press_behaviour: 'auto',
+										also_select: false,
+										long_press_selects: true,
+									},
+						},
+					],
+					up: [
+						{
+							actionId: (talk ? 'talk_up' : 'listen_up') as 'talk_up' | 'listen_up',
+							options: talk
+								? { ...keyOptions, press_behaviour: 'auto', double_tap_listen: false }
+								: { ...keyOptions, press_behaviour: 'auto', long_press_selects: true },
+						},
+					],
+				},
+			],
+		}
+	}
+
 	private createLayeredKeyPreset(name: string, keyOptions: CompanionOptionValues) {
 
 		return {
@@ -1266,45 +1491,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					halign: 'center' as const,
 					valign: 'center' as const,
 				},
-				{
-					id: 'level-bar',
-					type: 'gauge' as const,
-					name: 'Listen level',
-					x: 8,
-					y: 84,
-					width: 84,
-					height: 8,
-					orientation: 'horizontal' as const,
-					value: this.expr<number>('$(local:level)'),
-					min: MIN_LISTEN_LEVEL_DB_DISPLAY,
-					max: MAX_LISTEN_LEVEL_DB,
-					fillEnabled: true,
-					roundedEnds: true,
-					trackStyle: 'dimmed' as const,
-					// How much colour the unfilled rail keeps; low so the fill reads as a level.
-					trackAmount: 18,
-					multiColour: true,
-					stops: [
-						{ value: MIN_LISTEN_LEVEL_DB_DISPLAY, color: combineRgb(70, 130, 180), gradient: true },
-						{ value: 0, color: combineRgb(200, 225, 255), gradient: true },
-						{ value: MAX_LISTEN_LEVEL_DB, color: combineRgb(255, 190, 60), gradient: false },
-					],
-				},
-				{
-					id: 'selected-outline',
-					type: 'box' as const,
-					name: 'Selected',
-					x: 0,
-					y: 0,
-					width: 100,
-					height: 100,
-					// Transparent fill: opacity would fade the border away with it.
-					color: combineRgb(0, 0, 0, 0),
-					borderWidth: 4,
-					borderColor: combineRgb(255, 255, 255),
-					borderPosition: 'inside' as const,
-					enabled: false,
-				},
+				this.levelBarElement(),
+				this.selectedBarBorderElement(),
 			],
 			localVariables: [
 				{
@@ -1344,7 +1532,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				{
 					feedbackId: 'key_selected' as const,
 					options: keyOptions,
-					styleOverrides: [{ elementId: 'selected-outline', elementProperty: 'enabled', override: this.overrideValue(true) }],
+					styleOverrides: [{ elementId: 'level-border', elementProperty: 'enabled', override: this.overrideValue(true) }],
 				},
 			],
 			steps: [
@@ -1386,15 +1574,31 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			canvas: { decoration: ButtonGraphicsDecorationType.None },
 			elements: [
 				{
+					id: 'name',
+					type: 'text' as const,
+					name: 'Selected key',
+					x: 4,
+					y: 4,
+					width: 92,
+					height: 22,
+					text: this.expr<string>('$(local:name)'),
+					fontsize: 16,
+					fontsizeAllowShrink: true,
+					weight: 'bold' as const,
+					color: combineRgb(255, 255, 255),
+					halign: 'center' as const,
+					valign: 'center' as const,
+				},
+				{
 					id: 'arrow',
 					type: 'text' as const,
 					name: 'Direction',
 					x: 4,
-					y: 6,
+					y: 26,
 					width: 92,
-					height: 46,
+					height: 30,
 					text: up ? '\u25b2' : '\u25bc',
-					fontsize: 28,
+					fontsize: 24,
 					fontsizeAllowShrink: true,
 					color: combineRgb(255, 255, 255),
 					halign: 'center' as const,
@@ -1405,11 +1609,11 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					type: 'text' as const,
 					name: 'Level',
 					x: 4,
-					y: 52,
+					y: 56,
 					width: 92,
 					height: 24,
 					text: this.expr<string>('$(local:level) dB'),
-					fontsize: 14,
+					fontsize: 16,
 					fontsizeAllowShrink: true,
 					font: 'companion-mono' as const,
 					color: combineRgb(200, 225, 255),
@@ -1441,6 +1645,12 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				},
 			],
 			localVariables: [
+				{
+					variableName: 'name',
+					variableType: 'feedback' as const,
+					feedbackId: 'key_name' as const,
+					options: selectedOptions,
+				},
 				{
 					variableName: 'level',
 					variableType: 'feedback' as const,
@@ -1564,60 +1774,6 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				},
 			],
 		}
-	}
-
-	private createKeyPreset(name: string, text: string, mode: 'talk' | 'listen', options: CompanionOptionValues) {
-		const feedbackId = mode === 'talk' ? 'talk_active' : 'listen_active'
-		const downAction = mode === 'talk' ? 'talk_down' : 'listen_down'
-		const upAction = mode === 'talk' ? 'talk_up' : 'listen_up'
-
-		return {
-			type: 'simple' as const,
-			name,
-			style: {
-				text,
-				size: 14,
-				color: combineRgb(255, 255, 255),
-				bgcolor: combineRgb(0, 0, 0),
-				alignment: 'center:center' as const,
-			},
-			feedbacks: [
-				{
-					feedbackId,
-					options,
-					style: this.getPresetFeedbackStyle(mode),
-				},
-			],
-			steps: [
-				{
-					down: [
-						{ actionId: downAction, options: { ...options, press_behaviour: 'auto', also_select: true } },
-					],
-					up: [
-						{
-							actionId: upAction,
-							options: {
-								...options,
-								press_behaviour: 'auto',
-								...(mode === 'talk' ? { double_tap_listen: true } : {}),
-							},
-						},
-					],
-				},
-			],
-		}
-	}
-
-	private getPresetFeedbackStyle(mode: 'talk' | 'listen'): CompanionFeedbackButtonStyleResult {
-		return mode === 'talk'
-			? {
-					bgcolor: combineRgb(255, 0, 0),
-					color: combineRgb(255, 255, 255),
-				}
-			: {
-					bgcolor: combineRgb(0, 180, 0),
-					color: combineRgb(255, 255, 255),
-				}
 	}
 
 	private getVariableDefinitions(): CompanionVariableDefinitions {
@@ -2014,8 +2170,22 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		return true
 	}
 
-	private onListenDown(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
+	private onListenDown(key: KeyConfig, behaviour: PressBehaviour = 'auto', longPressSelects = false): void {
 		if (!key.can_listen) return
+
+		// Held rather than tapped, this key takes the selection for the duration
+		// of the press, so the volume controls can be pointed at it without
+		// giving up whatever was selected before.
+		if (longPressSelects) {
+			this.selectHoldTimers.set(
+				key.target_id,
+				setTimeout(() => {
+					this.selectHoldTimers.delete(key.target_id)
+					this.selectionBeforeHold.set(key.target_id, this.selectedKeyToken)
+					this.selectKey(key)
+				}, LONG_PRESS_SELECT_MS),
+			)
+		}
 
 		if (this.latchesOnPress(key, 'listen', behaviour)) {
 			this.onSetKeyMode(key, 'listen', 'toggle')
@@ -2027,8 +2197,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.setListenActive(key, this.getEffectiveState(this.listenControlState, key.target_id))
 	}
 
-	private onListenUp(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
+	private onListenUp(key: KeyConfig, behaviour: PressBehaviour = 'auto', longPressSelects = false): void {
 		if (!key.can_listen) return
+
+		if (longPressSelects) this.endSelectHold(key)
 		if (this.latchesOnPress(key, 'listen', behaviour)) return
 
 		const wasShortPress = this.wasShortPress(this.listenControlState, key.target_id)
@@ -2071,6 +2243,24 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		const active = kind === 'talk' ? this.getTalkActive(key) : this.getListenActive(key)
 		if (!active) return 'off'
 		return this.isLatched(key, kind) ? 'latched' : 'momentary'
+	}
+
+	/** Give the selection back once a borrowing listen key is released. */
+	private endSelectHold(key: KeyConfig): void {
+		const timer = this.selectHoldTimers.get(key.target_id)
+		if (timer) {
+			clearTimeout(timer)
+			this.selectHoldTimers.delete(key.target_id)
+		}
+
+		if (!this.selectionBeforeHold.has(key.target_id)) return
+		const previous = this.selectionBeforeHold.get(key.target_id)
+		this.selectionBeforeHold.delete(key.target_id)
+
+		this.selectedKeyToken = previous
+		this.reconcileSelection()
+		this.checkFeedbacks('key_selected')
+		this.pushVariableValues()
 	}
 
 	private onSetKeyMode(key: KeyConfig, kind: 'talk' | 'listen', mode: SetMode): void {
@@ -2354,6 +2544,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.settleTimers.clear()
 		for (const timer of this.pressTimers.values()) clearTimeout(timer)
 		this.pressTimers.clear()
+		for (const timer of this.selectHoldTimers.values()) clearTimeout(timer)
+		this.selectHoldTimers.clear()
+		this.selectionBeforeHold.clear()
 		this.secondTapInProgress.clear()
 		this.pressApplied.clear()
 		this.talkControlState = this.createControlState()
