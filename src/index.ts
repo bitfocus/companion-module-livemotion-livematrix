@@ -189,9 +189,9 @@ const KEY_LABEL_BOX_HEIGHT = 62
  * wherever it sits, whatever shape of box it lands in.
  */
 const TEXT_KEY_LABEL = 30
-const TEXT_KEY_NAME = 13
-const TEXT_LEVEL = 9
-const TEXT_ARROW = 12
+const TEXT_KEY_NAME = 18
+const TEXT_LEVEL = 14
+const TEXT_ARROW = 18
 
 /**
  * How much of a key is left showing when nobody is logged in on the other end.
@@ -1811,9 +1811,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					id: 'name',
 					type: 'text' as const,
 					name: 'Selected key',
-					x: 12,
+					// Kept inside the ring's hole so long names shrink rather than run under it.
+					x: 26,
 					y: 22,
-					width: 76,
+					width: 48,
 					height: 26,
 					text: this.expr<string>('$(local:name)'),
 					fontsize: fontsizeForBox(TEXT_KEY_NAME, 26),
@@ -1827,12 +1828,12 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					id: 'level-text',
 					type: 'text' as const,
 					name: 'Level',
-					x: 12,
+					x: 26,
 					y: 48,
-					width: 76,
+					width: 48,
 					height: 24,
 					text: this.expr<string>('$(local:level) dB'),
-					fontsize: fontsizeForBox(TEXT_LEVEL, 20),
+					fontsize: fontsizeForBox(TEXT_LEVEL, 24),
 					fontsizeAllowShrink: true,
 					font: 'companion-mono' as const,
 					color: combineRgb(200, 225, 255),
@@ -2607,8 +2608,12 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		return key.target_type === 'party_line' ? this.state.party_line_listen_level : this.state.listen_level
 	}
 
+	/**
+	 * Only users log in and out. Party lines and groups are always there, so they
+	 * always read as connected rather than fading away.
+	 */
 	private isKeyUserConnected(key: KeyConfig): boolean {
-		if (key.target_type !== 'user') return false
+		if (key.target_type !== 'user') return true
 		return this.connectedUsers.has(key.target_id)
 	}
 
