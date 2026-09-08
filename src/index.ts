@@ -147,6 +147,12 @@ const TAP_THRESHOLD_MS = 300
  * between the two releases, so it is the gap the operator feels.
  */
 const DOUBLE_TAP_WINDOW_MS = 400
+/**
+ * How long a tap's talk state is held back while we find out whether a second
+ * tap is coming. Short enough not to be felt on a single tap, long enough that
+ * a quick double tap never latches talk on at all.
+ */
+const DOUBLE_TAP_SETTLE_MS = 50
 /// Fallback until `login_success` tells us what the server actually wants.
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000
 const DEFAULT_SERVER_PORT = 55678
@@ -238,6 +244,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	private selectedKeyToken: string | undefined
 	/** When the last tap on a key ended, for spotting a double tap. */
 	private lastTapAt = new Map<string, number>()
+	/** Releases we are sitting on for DOUBLE_TAP_SETTLE_MS, keyed by target. */
+	private settleTimers = new Map<string, NodeJS.Timeout>()
+	/** Keys whose second tap has begun, so this press must not drive talk. */
+	private secondTapInProgress = new Set<string>()
 	/**
 	 * Whether talk was latched before the first tap of a possible double tap,
 	 * so a second tap can put it back rather than leaving it toggled.
@@ -1035,8 +1045,15 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			},
 		}
 		presets['selected_volume'] = this.createSelectedVolumePreset()
+		presets['selected_volume_up'] = this.createSelectedVolumeStepPreset('up')
+		presets['selected_volume_down'] = this.createSelectedVolumeStepPreset('down')
 
-		const globalPresets = ['global_button', 'selected_volume']
+		const globalPresets = [
+			'global_button',
+			'selected_volume',
+			'selected_volume_up',
+			'selected_volume_down',
+		]
 		const keyPresets: string[] = []
 		const talkIndexPresets: string[] = []
 		const listenIndexPresets: string[] = []
@@ -1340,6 +1357,102 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	 * A rotary control for whichever key is currently selected: turn to trim the level,
 	 * press to return it to unity.
 	 */
+	/**
+	 * A plain up or down key for the selected key's level, for surfaces with no
+	 * encoder. Holding it repeats, so a long trim does not mean twenty presses.
+	 */
+	private createSelectedVolumeStepPreset(direction: 'up' | 'down') {
+		const selectedOptions = this.presetKeyOptions('selected')
+		const up = direction === 'up'
+		const stepDb = up ? LEVEL_STEP_DB : -LEVEL_STEP_DB
+
+		return {
+			type: 'layered' as const,
+			name: `Selected key volume ${direction}`,
+			canvas: { decoration: ButtonGraphicsDecorationType.None },
+			elements: [
+				{
+					id: 'arrow',
+					type: 'text' as const,
+					name: 'Direction',
+					x: 4,
+					y: 6,
+					width: 92,
+					height: 46,
+					text: up ? '\u25b2' : '\u25bc',
+					fontsize: 28,
+					fontsizeAllowShrink: true,
+					color: combineRgb(255, 255, 255),
+					halign: 'center' as const,
+					valign: 'center' as const,
+				},
+				{
+					id: 'level-text',
+					type: 'text' as const,
+					name: 'Level',
+					x: 4,
+					y: 52,
+					width: 92,
+					height: 24,
+					text: this.expr<string>('$(local:level) dB'),
+					fontsize: 14,
+					fontsizeAllowShrink: true,
+					font: 'companion-mono' as const,
+					color: combineRgb(200, 225, 255),
+					halign: 'center' as const,
+					valign: 'center' as const,
+				},
+				{
+					id: 'level-bar',
+					type: 'gauge' as const,
+					name: 'Listen level',
+					x: 8,
+					y: 84,
+					width: 84,
+					height: 8,
+					orientation: 'horizontal' as const,
+					value: this.expr<number>('$(local:level)'),
+					min: MIN_LISTEN_LEVEL_DB_DISPLAY,
+					max: MAX_LISTEN_LEVEL_DB,
+					fillEnabled: true,
+					roundedEnds: true,
+					trackStyle: 'dimmed' as const,
+					trackAmount: 18,
+					multiColour: true,
+					stops: [
+						{ value: MIN_LISTEN_LEVEL_DB_DISPLAY, color: combineRgb(70, 130, 180), gradient: true },
+						{ value: 0, color: combineRgb(200, 225, 255), gradient: true },
+						{ value: MAX_LISTEN_LEVEL_DB, color: combineRgb(255, 190, 60), gradient: false },
+					],
+				},
+			],
+			localVariables: [
+				{
+					variableName: 'level',
+					variableType: 'feedback' as const,
+					feedbackId: 'key_listen_level_db' as const,
+					options: selectedOptions,
+				},
+			],
+			feedbacks: [],
+			steps: [
+				{
+					down: [
+						{ actionId: 'listen_level_delta' as const, options: { ...selectedOptions, delta_db: stepDb } },
+					],
+					up: [],
+					// Held past half a second, keep stepping every 150ms.
+					500: {
+						options: { runWhileHeld: true },
+						actions: [
+							{ actionId: 'listen_level_delta' as const, options: { ...selectedOptions, delta_db: stepDb } },
+						],
+					},
+				},
+			],
+		}
+	}
+
 	private createSelectedVolumePreset() {
 		const selectedOptions = this.presetKeyOptions('selected')
 
@@ -1714,23 +1827,90 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			return
 		}
 
+		// A press landing on a held-back release is the second half of a double
+		// tap. Drop the press the first tap was still holding rather than
+		// latching it, and leave talk alone until we see how this one ends.
+		if (this.cancelSettle(key)) {
+			this.secondTapInProgress.add(key.target_id)
+			this.releaseTalkPress(key)
+			this.talkControlState.pressStart.set(key.target_id, Date.now())
+			this.talkControlState.pressing.set(key.target_id, true)
+			return
+		}
+
 		this.talkControlState.pressStart.set(key.target_id, Date.now())
 		this.talkControlState.pressing.set(key.target_id, true)
 		this.setTalkActive(key, this.getEffectiveState(this.talkControlState, key.target_id))
+	}
+
+	/** Let go of a held press without touching the latched layer. */
+	private releaseTalkPress(key: KeyConfig): void {
+		this.talkControlState.pressing.set(key.target_id, false)
+		this.setTalkActive(key, this.getEffectiveState(this.talkControlState, key.target_id), {
+			forceSend: true,
+			momentary: false,
+		})
+		this.sendKeyState(key, 'talk', 'momentary', false)
+	}
+
+	private cancelSettle(key: KeyConfig): boolean {
+		const timer = this.settleTimers.get(key.target_id)
+		if (!timer) return false
+		clearTimeout(timer)
+		this.settleTimers.delete(key.target_id)
+		return true
 	}
 
 	private onTalkUp(key: KeyConfig, behaviour: PressBehaviour = 'auto', doubleTapListen = true): void {
 		if (!key.can_talk) return
 		if (this.latchesOnPress(key, 'talk', behaviour)) return
 
+		// The release that ends a double tap: the press was never applied, so
+		// there is nothing to undo - just switch listening.
+		if (this.secondTapInProgress.delete(key.target_id)) {
+			this.talkControlState.pressing.set(key.target_id, false)
+			this.lastTapAt.delete(key.target_id)
+			this.talkLatchBeforeTap.delete(key.target_id)
+			this.onSetKeyMode(key, 'listen', 'toggle')
+			return
+		}
+
 		const wasShortPress = this.wasShortPress(this.talkControlState, key.target_id)
-		const wasMomentary = this.talkControlState.pressing.get(key.target_id) ?? false
 		const latchedBefore = this.talkControlState.latched.get(key.target_id) ?? false
 
+		// Hold a tap's talk state back briefly in case a second tap follows. The
+		// press stays held meanwhile, so a plain tap that turns into a latch has
+		// no gap in it, and one that turns into a double tap never latches.
+		if (wasShortPress && this.doubleTapArmed(key, doubleTapListen)) {
+			this.settleTimers.set(
+				key.target_id,
+				setTimeout(() => {
+					this.settleTimers.delete(key.target_id)
+					this.commitTalkRelease(key, behaviour, wasShortPress, latchedBefore, doubleTapListen)
+				}, DOUBLE_TAP_SETTLE_MS),
+			)
+			return
+		}
+
+		this.commitTalkRelease(key, behaviour, wasShortPress, latchedBefore, doubleTapListen)
+	}
+
+	/**
+	 * Apply what a release means once we know no second tap is coming.
+	 */
+	private commitTalkRelease(
+		key: KeyConfig,
+		behaviour: PressBehaviour,
+		wasShortPress: boolean,
+		latchedBefore: boolean,
+		doubleTapListen: boolean,
+	): void {
+		const wasMomentary = this.talkControlState.pressing.get(key.target_id) ?? false
 		this.talkControlState.pressing.set(key.target_id, false)
 
-		// A second quick tap means the operator wanted to switch listening, not
-		// to leave talk latched, so put talk back where the first tap found it.
+		// A late second tap - one that arrived after the settle window, so the
+		// first tap had already latched - still switches listening, and puts talk
+		// back where that first tap found it.
 		const secondTap = wasShortPress && this.takeDoubleTap(key, doubleTapListen)
 		if (secondTap) {
 			this.talkControlState.latched.set(key.target_id, this.talkLatchBeforeTap.get(key.target_id) ?? false)
@@ -1739,7 +1919,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			this.talkControlState.latched.set(key.target_id, !latchedBefore)
 		}
 
-		if (wasShortPress && !secondTap) {
+		if (wasShortPress && !secondTap && this.doubleTapArmed(key, doubleTapListen)) {
 			this.lastTapAt.set(key.target_id, Date.now())
 			this.talkLatchBeforeTap.set(key.target_id, latchedBefore)
 		}
@@ -1759,6 +1939,11 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		}
 	}
 
+	/** Whether this key takes the double-tap gesture at all. */
+	private doubleTapArmed(key: KeyConfig, enabled: boolean): boolean {
+		return enabled && key.can_talk && key.can_listen
+	}
+
 	/**
 	 * Whether this release completes a double tap, consuming it if so.
 	 *
@@ -1766,7 +1951,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	 * and swallowing the second tap's latch would just make the key feel broken.
 	 */
 	private takeDoubleTap(key: KeyConfig, enabled: boolean): boolean {
-		if (!enabled || !key.can_talk || !key.can_listen) return false
+		if (!this.doubleTapArmed(key, enabled)) return false
 
 		const previous = this.lastTapAt.get(key.target_id)
 		if (previous === undefined || Date.now() - previous > DOUBLE_TAP_WINDOW_MS) return false
@@ -2111,6 +2296,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.latchedState = undefined
 		this.lastTapAt.clear()
 		this.talkLatchBeforeTap.clear()
+		for (const timer of this.settleTimers.values()) clearTimeout(timer)
+		this.settleTimers.clear()
+		this.secondTapInProgress.clear()
 		this.talkControlState = this.createControlState()
 		this.listenControlState = this.createControlState()
 		this.globalLatched = false
