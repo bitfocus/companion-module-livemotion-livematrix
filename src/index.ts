@@ -169,6 +169,14 @@ const TALK_ACCENT = combineRgb(255, 40, 40)
 const TALK_SHADOW = combineRgb(24, 0, 0)
 const LISTEN_ACCENT = combineRgb(0, 220, 90)
 const LISTEN_SHADOW = combineRgb(0, 20, 8)
+/**
+ * Border colours are the accents softened. At rest the border only says what
+ * the key is for; the saturated accent is reserved for the fill, which says
+ * the key is live.
+ */
+const TALK_BORDER = combineRgb(198, 104, 104)
+const LISTEN_BORDER = combineRgb(96, 176, 128)
+const BORDER_WIDTH = 2
 /// Fallback until `login_success` tells us what the server actually wants.
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000
 const DEFAULT_SERVER_PORT = 55678
@@ -176,7 +184,7 @@ const DEFAULT_CLIENT_PORT = 9100
 const MIN_LISTEN_LEVEL_DB = -100
 /** The quietest level worth showing on a meter; -100 dB is silence and wastes the scale. */
 const MIN_LISTEN_LEVEL_DB_DISPLAY = -40
-const MAX_LISTEN_LEVEL_DB = 6
+const MAX_LISTEN_LEVEL_DB = 10
 /** One detent of a rotary encoder. */
 const LEVEL_STEP_DB = 1
 
@@ -832,10 +840,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					{
 						type: 'number' as const,
 						id: 'level',
-						label: 'Level dB (-100 to +6, users max 0)',
+						label: `Level dB (${MIN_LISTEN_LEVEL_DB} to +${MAX_LISTEN_LEVEL_DB})`,
 						default: 0,
 						min: MIN_LISTEN_LEVEL_DB,
-						max: 6,
+						max: MAX_LISTEN_LEVEL_DB,
 						step: 0.1,
 						range: false,
 					},
@@ -1106,7 +1114,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			'selected_volume_up',
 			'selected_volume_down',
 		]
-		const keyPresets: string[] = []
+		const keyIndexPresets: string[] = []
+		const keyTargetPresets: string[] = []
 		const talkIndexPresets: string[] = []
 		const listenIndexPresets: string[] = []
 		const talkTargetPresets: string[] = []
@@ -1116,12 +1125,19 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			const targetToken = this.keyTargetToken(key)
 			const safeName = sanitizeName(key.display_name)
 
-			const keyId = `key_${index}`
-			presets[keyId] = this.createLayeredKeyPreset(
-				`${key.display_name} (intercom key)`,
+			const keyIndexId = `key_index_${index}`
+			presets[keyIndexId] = this.createLayeredKeyPreset(
+				`Intercom key ${index}`,
+				this.presetKeyOptions('index', { index, target: targetToken }),
+			)
+			keyIndexPresets.push(keyIndexId)
+
+			const keyTargetId = `key_target_${safeName}_${index}`
+			presets[keyTargetId] = this.createLayeredKeyPreset(
+				`Intercom ${key.display_name}`,
 				this.presetKeyOptions('target', { index, target: targetToken }),
 			)
-			keyPresets.push(keyId)
+			keyTargetPresets.push(keyTargetId)
 
 			const talkIndexId = `talk_index_${index}`
 			presets[talkIndexId] = this.createSideKeyPreset(
@@ -1158,9 +1174,14 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 		const structure: CompanionPresetSection<LiveMatrixManifest>[] = [
 			{
-				id: 'keys',
-				name: 'Intercom Keys',
-				definitions: keyPresets,
+				id: 'keys-index',
+				name: 'Intercom Keys (by index)',
+				definitions: keyIndexPresets,
+			},
+			{
+				id: 'keys-target',
+				name: 'Intercom Keys (by target)',
+				definitions: keyTargetPresets,
 			},
 			{
 				id: 'global',
@@ -1211,6 +1232,30 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	 * label stays readable, and read as a saturated edge at the outside.
 	 * A bar along the bottom shows the listen level.
 	 */
+	/**
+	 * Half of the frame around a combined key, in that half's colour. Drawn as
+	 * three segments rather than a box so the two halves meet without a seam up
+	 * the middle of the key.
+	 */
+	private halfBorderElements(side: 'left' | 'right') {
+		const left = side === 'left'
+		const color = left ? LISTEN_BORDER : TALK_BORDER
+		const x0 = left ? 0 : 50
+		const x1 = left ? 50 : 100
+		const edge = left ? 0 : 100
+		const common = {
+			borderWidth: BORDER_WIDTH,
+			borderColor: color,
+			borderPosition: 'inside' as const,
+		}
+
+		return [
+			{ id: `${side}-border-top`, type: 'line' as const, name: `${side} top`, fromX: x0, fromY: 0, toX: x1, toY: 0, ...common },
+			{ id: `${side}-border-side`, type: 'line' as const, name: `${side} edge`, fromX: edge, fromY: 0, toX: edge, toY: 100, ...common },
+			{ id: `${side}-border-bottom`, type: 'line' as const, name: `${side} bottom`, fromX: x0, fromY: 100, toX: x1, toY: 100, ...common },
+		]
+	}
+
 	/** The listen level, drawn as a rail along the bottom of a key. */
 	private levelBarElement() {
 		return {
@@ -1276,7 +1321,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		return {
 			type: 'layered' as const,
 			name,
-			canvas: { decoration: ButtonGraphicsDecorationType.None },
+			canvas: { decoration: ButtonGraphicsDecorationType.FollowDefault },
 			elements: [
 				{
 					id: 'fill',
@@ -1310,8 +1355,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					width: 100,
 					height: 100,
 					color: combineRgb(0, 0, 0, 0),
-					borderWidth: 4,
-					borderColor: accent,
+					borderWidth: BORDER_WIDTH,
+					borderColor: talk ? TALK_BORDER : LISTEN_BORDER,
 					borderPosition: 'inside' as const,
 				},
 				{
@@ -1407,7 +1452,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		return {
 			type: 'layered' as const,
 			name,
-			canvas: { decoration: ButtonGraphicsDecorationType.None },
+			canvas: { decoration: ButtonGraphicsDecorationType.FollowDefault },
 			elements: [
 				{
 					id: 'listen-fill',
@@ -1491,6 +1536,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					halign: 'center' as const,
 					valign: 'center' as const,
 				},
+				...this.halfBorderElements('left'),
+				...this.halfBorderElements('right'),
 				this.levelBarElement(),
 				this.selectedBarBorderElement(),
 			],
@@ -1571,7 +1618,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		return {
 			type: 'layered' as const,
 			name: `Selected key volume ${direction}`,
-			canvas: { decoration: ButtonGraphicsDecorationType.None },
+			canvas: { decoration: ButtonGraphicsDecorationType.FollowDefault },
 			elements: [
 				{
 					id: 'name',
@@ -1683,7 +1730,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		return {
 			type: 'layered' as const,
 			name: 'Selected key volume',
-			canvas: { decoration: ButtonGraphicsDecorationType.None },
+			canvas: { decoration: ButtonGraphicsDecorationType.FollowDefault },
 			elements: [
 				{
 					id: 'level-ring',
@@ -1877,6 +1924,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				label: 'Select key by',
 				default: 'target',
 				choices: keySelectChoices,
+				// The visibility expressions below read this field, and Companion
+				// only allows that for fields which cannot themselves be expressions.
+				disableAutoExpression: true,
 			},
 			{
 				type: 'number' as const,
@@ -2489,8 +2539,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.stateListenLevelMapForKey(key)[key.target_id] = level
 	}
 
-	private clampListenLevelLinear(key: KeyConfig, level: number): number {
-		return clamp(level, 0, key.target_type === 'party_line' ? 2 : 1)
+	private clampListenLevelLinear(_key: KeyConfig, level: number): number {
+		return clamp(level, 0, dbToLinear(MAX_LISTEN_LEVEL_DB))
 	}
 
 	private formatListenLevelDb(levelDb: number): string {
