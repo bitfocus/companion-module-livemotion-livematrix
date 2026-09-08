@@ -142,6 +142,11 @@ interface KeyControlState {
 }
 
 const TAP_THRESHOLD_MS = 300
+/**
+ * How long after a tap a second one still counts as a double tap. Measured
+ * between the two releases, so it is the gap the operator feels.
+ */
+const DOUBLE_TAP_WINDOW_MS = 400
 /// Fallback until `login_success` tells us what the server actually wants.
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000
 const DEFAULT_SERVER_PORT = 55678
@@ -231,6 +236,13 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	private talkControlState: KeyControlState = this.createControlState()
 	private listenControlState: KeyControlState = this.createControlState()
 	private selectedKeyToken: string | undefined
+	/** When the last tap on a key ended, for spotting a double tap. */
+	private lastTapAt = new Map<string, number>()
+	/**
+	 * Whether talk was latched before the first tap of a possible double tap,
+	 * so a second tap can put it back rather than leaving it toggled.
+	 */
+	private talkLatchBeforeTap = new Map<string, boolean>()
 	/** Presses we are holding, keyed by target token, restated on the heartbeat. */
 	private heldKeys = new Map<string, MomentaryHold>()
 	private heartbeatTimer: NodeJS.Timeout | undefined
@@ -684,10 +696,26 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			},
 			talk_up: {
 				name: 'Talk key up',
-				options: [...this.getKeySelectorOptions(), this.getPressBehaviourOption()],
+				options: [
+					...this.getKeySelectorOptions(),
+					this.getPressBehaviourOption(),
+					{
+						type: 'checkbox' as const,
+						id: 'double_tap_listen',
+						label: 'Double tap switches listening',
+						tooltip:
+							'On a key that can both talk and listen, two quick taps toggle listen instead of leaving talk latched. Ignored on talk-only keys.',
+						default: true,
+					},
+				],
 				callback: async (action) => {
 					const key = this.resolveKey(action.options)
-					if (key) this.onTalkUp(key, this.readPressBehaviour(action.options))
+					if (!key) return
+					this.onTalkUp(
+						key,
+						this.readPressBehaviour(action.options),
+						action.options.double_tap_listen !== false,
+					)
 				},
 			},
 			talk_set: {
@@ -1200,7 +1228,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					width: 92,
 					height: 62,
 					text: this.expr<string>('$(local:name)'),
-					fontsize: 16,
+					fontsize: 32,
 					fontsizeAllowShrink: true,
 					weight: 'bold' as const,
 					color: combineRgb(255, 255, 255),
@@ -1291,7 +1319,12 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			steps: [
 				{
 					down: [{ actionId: 'talk_down' as const, options: { ...keyOptions, press_behaviour: 'auto', also_select: true } }],
-					up: [{ actionId: 'talk_up' as const, options: { ...keyOptions, press_behaviour: 'auto' } }],
+					up: [
+						{
+							actionId: 'talk_up' as const,
+							options: { ...keyOptions, press_behaviour: 'auto', double_tap_listen: true },
+						},
+					],
 					rotate_left: [
 						{ actionId: 'listen_level_delta' as const, options: { ...keyOptions, delta_db: -LEVEL_STEP_DB } },
 					],
@@ -1433,7 +1466,16 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					down: [
 						{ actionId: downAction, options: { ...options, press_behaviour: 'auto', also_select: true } },
 					],
-					up: [{ actionId: upAction, options: { ...options, press_behaviour: 'auto' } }],
+					up: [
+						{
+							actionId: upAction,
+							options: {
+								...options,
+								press_behaviour: 'auto',
+								...(mode === 'talk' ? { double_tap_listen: true } : {}),
+							},
+						},
+					],
 				},
 			],
 		}
@@ -1677,16 +1719,29 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.setTalkActive(key, this.getEffectiveState(this.talkControlState, key.target_id))
 	}
 
-	private onTalkUp(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
+	private onTalkUp(key: KeyConfig, behaviour: PressBehaviour = 'auto', doubleTapListen = true): void {
 		if (!key.can_talk) return
 		if (this.latchesOnPress(key, 'talk', behaviour)) return
 
 		const wasShortPress = this.wasShortPress(this.talkControlState, key.target_id)
 		const wasMomentary = this.talkControlState.pressing.get(key.target_id) ?? false
+		const latchedBefore = this.talkControlState.latched.get(key.target_id) ?? false
 
 		this.talkControlState.pressing.set(key.target_id, false)
-		if (this.latchesOnRelease(key, 'talk', behaviour) && wasShortPress) {
-			this.talkControlState.latched.set(key.target_id, !(this.talkControlState.latched.get(key.target_id) ?? false))
+
+		// A second quick tap means the operator wanted to switch listening, not
+		// to leave talk latched, so put talk back where the first tap found it.
+		const secondTap = wasShortPress && this.takeDoubleTap(key, doubleTapListen)
+		if (secondTap) {
+			this.talkControlState.latched.set(key.target_id, this.talkLatchBeforeTap.get(key.target_id) ?? false)
+			this.talkLatchBeforeTap.delete(key.target_id)
+		} else if (this.latchesOnRelease(key, 'talk', behaviour) && wasShortPress) {
+			this.talkControlState.latched.set(key.target_id, !latchedBefore)
+		}
+
+		if (wasShortPress && !secondTap) {
+			this.lastTapAt.set(key.target_id, Date.now())
+			this.talkLatchBeforeTap.set(key.target_id, latchedBefore)
 		}
 
 		const newEffective = this.getEffectiveState(this.talkControlState, key.target_id)
@@ -1698,6 +1753,26 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		} else {
 			this.setTalkActive(key, newEffective)
 		}
+
+		if (secondTap) {
+			this.onSetKeyMode(key, 'listen', 'toggle')
+		}
+	}
+
+	/**
+	 * Whether this release completes a double tap, consuming it if so.
+	 *
+	 * Only combined keys qualify: on a talk-only key there is nothing to switch,
+	 * and swallowing the second tap's latch would just make the key feel broken.
+	 */
+	private takeDoubleTap(key: KeyConfig, enabled: boolean): boolean {
+		if (!enabled || !key.can_talk || !key.can_listen) return false
+
+		const previous = this.lastTapAt.get(key.target_id)
+		if (previous === undefined || Date.now() - previous > DOUBLE_TAP_WINDOW_MS) return false
+
+		this.lastTapAt.delete(key.target_id)
+		return true
 	}
 
 	private onListenDown(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
@@ -2034,6 +2109,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.connectedUsers.clear()
 		this.state = createEmptyState()
 		this.latchedState = undefined
+		this.lastTapAt.clear()
+		this.talkLatchBeforeTap.clear()
 		this.talkControlState = this.createControlState()
 		this.listenControlState = this.createControlState()
 		this.globalLatched = false
