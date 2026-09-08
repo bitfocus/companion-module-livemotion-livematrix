@@ -4,6 +4,13 @@
 	"private": true,
 	"type": "module",
 	"description": "Bitfocus Companion module for LiveMatrix",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yannisgu/companion-module-livematrix.git"
+	},
+	"bugs": {
+		"url": "https://github.com/yannisgu/companion-module-livematrix/issues"
+	},
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
 	"files": [

@@ -6,8 +6,8 @@
   "description": "Control LiveMatrix talk, listen, and global keys over the existing websocket protocol",
   "version": "0.1.0",
   "license": "UNLICENSED",
-  "repository": "",
-  "bugs": "",
+  "repository": "https://github.com/yannisgu/companion-module-livematrix.git",
+  "bugs": "https://github.com/yannisgu/companion-module-livematrix/issues",
   "maintainers": [],
   "runtime": {
     "type": "node22",
