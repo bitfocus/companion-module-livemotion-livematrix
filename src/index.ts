@@ -178,24 +178,35 @@ const TALK_BORDER = combineRgb(198, 104, 104)
 const LISTEN_BORDER = combineRgb(96, 176, 128)
 const BORDER_WIDTH = 2
 
-/**
- * Key label size, as a percentage of the height of the box holding it, and the
- * box height that percentage is written for.
- *
- * Companion sizes text against its own element rather than the button, so the
- * same percentage in a taller box draws larger text. A talk key has no level
- * rail and so a taller label box than a listen or combined key; without
- * compensating, its name came out half again as big as its neighbours'.
- */
-const KEY_LABEL_FONTSIZE = 32
 const KEY_LABEL_BOX_HEIGHT = 62
 
 /**
- * The percentage that renders KEY_LABEL_FONTSIZE at the reference height.
- * Left unrounded: a whole number here is off by enough to see.
+ * Text sizes, as a percentage of the button.
+ *
+ * Companion sizes text against the element holding it rather than against the
+ * button, so the same number draws larger text in a taller box. Writing sizes
+ * against the button and converting keeps text of one kind at one size
+ * wherever it sits, whatever shape of box it lands in.
  */
-function labelFontsize(boxHeight: number): number {
-	return (KEY_LABEL_FONTSIZE * KEY_LABEL_BOX_HEIGHT) / boxHeight
+const TEXT_KEY_LABEL = 20
+const TEXT_KEY_NAME = 9
+const TEXT_LEVEL = 9
+const TEXT_ARROW = 12
+
+/**
+ * How much of a key is left showing when nobody is logged in on the other end.
+ * A key to somebody who is not there still exists and can still be latched, so
+ * it is faded rather than hidden.
+ */
+const OFFLINE_OPACITY = 35
+
+/**
+ * Convert a size written against the button into the percentage of its own box
+ * that Companion wants. Left unrounded: whole numbers here are off by enough to
+ * see between boxes of different heights.
+ */
+function fontsizeForBox(buttonPercent: number, boxHeight: number): number {
+	return (buttonPercent * 100) / boxHeight
 }
 /// Fallback until `login_success` tells us what the server actually wants.
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000
@@ -1389,7 +1400,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					width: 88,
 					height: labelBoxHeight,
 					text: this.expr<string>('$(local:name)'),
-					fontsize: labelFontsize(labelBoxHeight),
+					fontsize: fontsizeForBox(TEXT_KEY_LABEL, labelBoxHeight),
 					fontsizeAllowShrink: true,
 					weight: 'bold' as const,
 					color: combineRgb(255, 255, 255),
@@ -1439,6 +1450,14 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 							},
 						]
 					: []),
+				{
+					feedbackId: 'user_disconnected' as const,
+					options: keyOptions,
+					styleOverrides: [
+						{ elementId: 'label', elementProperty: 'opacity', override: this.overrideValue(OFFLINE_OPACITY) },
+						{ elementId: 'border', elementProperty: 'opacity', override: this.overrideValue(OFFLINE_OPACITY) },
+					],
+				},
 			],
 			steps: [
 				{
@@ -1550,7 +1569,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					width: 92,
 					height: KEY_LABEL_BOX_HEIGHT,
 					text: this.expr<string>('$(local:name)'),
-					fontsize: labelFontsize(KEY_LABEL_BOX_HEIGHT),
+					fontsize: fontsizeForBox(TEXT_KEY_LABEL, KEY_LABEL_BOX_HEIGHT),
 					fontsizeAllowShrink: true,
 					weight: 'bold' as const,
 					color: combineRgb(255, 255, 255),
@@ -1602,6 +1621,13 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					options: keyOptions,
 					styleOverrides: [{ elementId: 'level-border', elementProperty: 'enabled', override: this.overrideValue(true) }],
 				},
+				{
+					feedbackId: 'user_disconnected' as const,
+					options: keyOptions,
+					styleOverrides: [
+						{ elementId: 'label', elementProperty: 'opacity', override: this.overrideValue(OFFLINE_OPACITY) },
+					],
+				},
 			],
 			steps: [
 				{
@@ -1650,7 +1676,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					width: 92,
 					height: 22,
 					text: this.expr<string>('$(local:name)'),
-					fontsize: 16,
+					fontsize: fontsizeForBox(TEXT_KEY_NAME, 22),
 					fontsizeAllowShrink: true,
 					weight: 'bold' as const,
 					color: combineRgb(255, 255, 255),
@@ -1662,11 +1688,11 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					type: 'text' as const,
 					name: 'Direction',
 					x: 4,
-					y: 26,
+					y: 28,
 					width: 92,
-					height: 30,
+					height: 22,
 					text: up ? '\u25b2' : '\u25bc',
-					fontsize: 24,
+					fontsize: fontsizeForBox(TEXT_ARROW, 22),
 					fontsizeAllowShrink: true,
 					color: combineRgb(255, 255, 255),
 					halign: 'center' as const,
@@ -1677,11 +1703,11 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					type: 'text' as const,
 					name: 'Level',
 					x: 4,
-					y: 56,
+					y: 54,
 					width: 92,
-					height: 24,
+					height: 20,
 					text: this.expr<string>('$(local:level) dB'),
-					fontsize: 16,
+					fontsize: fontsizeForBox(TEXT_LEVEL, 20),
 					fontsizeAllowShrink: true,
 					font: 'companion-mono' as const,
 					color: combineRgb(200, 225, 255),
@@ -1790,7 +1816,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					width: 76,
 					height: 26,
 					text: this.expr<string>('$(local:name)'),
-					fontsize: 13,
+					fontsize: fontsizeForBox(TEXT_KEY_NAME, 26),
 					fontsizeAllowShrink: true,
 					weight: 'bold' as const,
 					color: combineRgb(255, 255, 255),
@@ -1806,7 +1832,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					width: 76,
 					height: 24,
 					text: this.expr<string>('$(local:level) dB'),
-					fontsize: 14,
+					fontsize: fontsizeForBox(TEXT_LEVEL, 20),
 					fontsizeAllowShrink: true,
 					font: 'companion-mono' as const,
 					color: combineRgb(200, 225, 255),
