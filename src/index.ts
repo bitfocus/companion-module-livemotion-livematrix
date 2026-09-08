@@ -149,12 +149,12 @@ const TAP_THRESHOLD_MS = 300
 const DOUBLE_TAP_WINDOW_MS = 400
 /**
  * How long a tap's talk state is held back while we find out whether a second
- * tap is coming. Covers the gap in an ordinary double tap, so one never latches
+ * tap is coming. Covers all but the slowest double tap, so one never latches
  * talk on at all. The cost is that a single tap latches this much later; the
  * press is held throughout, so the delay costs no audio, only the moment the
  * key stops being a press and starts being a latch.
  */
-const DOUBLE_TAP_SETTLE_MS = 150
+const DOUBLE_TAP_SETTLE_MS = 250
 /// Fallback until `login_success` tells us what the server actually wants.
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000
 const DEFAULT_SERVER_PORT = 55678
