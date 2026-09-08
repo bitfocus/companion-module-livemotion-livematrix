@@ -155,6 +155,14 @@ const DOUBLE_TAP_WINDOW_MS = 400
  * key stops being a press and starts being a latch.
  */
 const DOUBLE_TAP_SETTLE_MS = 250
+/**
+ * How long a press waits before it opens the mic, on a key that takes the
+ * double-tap gesture. A tap shorter than this never transmits at all, so a
+ * double tap does not flash the key. The cost is this much delay before a
+ * push-to-talk press opens: it is time before the operator has begun speaking,
+ * not speech that gets clipped, but set it to 0 to open the mic on the press.
+ */
+const PRESS_SETTLE_MS = 120
 /// Fallback until `login_success` tells us what the server actually wants.
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000
 const DEFAULT_SERVER_PORT = 55678
@@ -250,6 +258,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	private settleTimers = new Map<string, NodeJS.Timeout>()
 	/** Keys whose second tap has begun, so this press must not drive talk. */
 	private secondTapInProgress = new Set<string>()
+	/** Presses waiting out PRESS_SETTLE_MS before they open the mic. */
+	private pressTimers = new Map<string, NodeJS.Timeout>()
+	/** Keys whose press actually reached the server, so we know what to let go of. */
+	private pressApplied = new Set<string>()
 	/**
 	 * Whether talk was latched before the first tap of a possible double tap,
 	 * so a second tap can put it back rather than leaving it toggled.
@@ -1842,12 +1854,44 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 		this.talkControlState.pressStart.set(key.target_id, Date.now())
 		this.talkControlState.pressing.set(key.target_id, true)
+
+		// On a key that double taps, hold the mic closed for a moment. A tap
+		// quick enough to be half of a double tap is over before this fires, so
+		// the gesture never opens the mic or lights the key at all.
+		if (PRESS_SETTLE_MS > 0 && this.doubleTapArmedForKey(key)) {
+			this.pressTimers.set(
+				key.target_id,
+				setTimeout(() => {
+					this.pressTimers.delete(key.target_id)
+					this.applyTalkPress(key)
+				}, PRESS_SETTLE_MS),
+			)
+			return
+		}
+
+		this.applyTalkPress(key)
+	}
+
+	private applyTalkPress(key: KeyConfig): void {
+		this.pressApplied.add(key.target_id)
 		this.setTalkActive(key, this.getEffectiveState(this.talkControlState, key.target_id))
+	}
+
+	/** Cancel a press that has not opened the mic yet. */
+	private cancelPendingPress(key: KeyConfig): boolean {
+		const timer = this.pressTimers.get(key.target_id)
+		if (!timer) return false
+		clearTimeout(timer)
+		this.pressTimers.delete(key.target_id)
+		return true
 	}
 
 	/** Let go of a held press without touching the latched layer. */
 	private releaseTalkPress(key: KeyConfig): void {
+		this.cancelPendingPress(key)
 		this.talkControlState.pressing.set(key.target_id, false)
+		if (!this.pressApplied.delete(key.target_id)) return
+
 		this.setTalkActive(key, this.getEffectiveState(this.talkControlState, key.target_id), {
 			forceSend: true,
 			momentary: false,
@@ -1876,6 +1920,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			this.onSetKeyMode(key, 'listen', 'toggle')
 			return
 		}
+
+		// A press let go before it opened the mic never transmitted; there is
+		// nothing to hand over to the latched layer later.
+		this.cancelPendingPress(key)
 
 		const wasShortPress = this.wasShortPress(this.talkControlState, key.target_id)
 		const latchedBefore = this.talkControlState.latched.get(key.target_id) ?? false
@@ -1907,7 +1955,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		latchedBefore: boolean,
 		doubleTapListen: boolean,
 	): void {
-		const wasMomentary = this.talkControlState.pressing.get(key.target_id) ?? false
+		const wasMomentary = this.pressApplied.delete(key.target_id)
 		this.talkControlState.pressing.set(key.target_id, false)
 
 		// A late second tap - one that arrived after the settle window, so the
@@ -1943,7 +1991,11 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 	/** Whether this key takes the double-tap gesture at all. */
 	private doubleTapArmed(key: KeyConfig, enabled: boolean): boolean {
-		return enabled && key.can_talk && key.can_listen
+		return enabled && this.doubleTapArmedForKey(key)
+	}
+
+	private doubleTapArmedForKey(key: KeyConfig): boolean {
+		return key.can_talk && key.can_listen
 	}
 
 	/**
@@ -2300,7 +2352,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.talkLatchBeforeTap.clear()
 		for (const timer of this.settleTimers.values()) clearTimeout(timer)
 		this.settleTimers.clear()
+		for (const timer of this.pressTimers.values()) clearTimeout(timer)
+		this.pressTimers.clear()
 		this.secondTapInProgress.clear()
+		this.pressApplied.clear()
 		this.talkControlState = this.createControlState()
 		this.listenControlState = this.createControlState()
 		this.globalLatched = false
