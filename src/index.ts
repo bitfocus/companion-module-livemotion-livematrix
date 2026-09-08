@@ -188,8 +188,8 @@ const KEY_LABEL_BOX_HEIGHT = 62
  * against the button and converting keeps text of one kind at one size
  * wherever it sits, whatever shape of box it lands in.
  */
-const TEXT_KEY_LABEL = 20
-const TEXT_KEY_NAME = 9
+const TEXT_KEY_LABEL = 30
+const TEXT_KEY_NAME = 13
 const TEXT_LEVEL = 9
 const TEXT_ARROW = 12
 
