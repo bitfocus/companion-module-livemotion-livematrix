@@ -2234,6 +2234,12 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			// so the key never drops out for a moment in between.
 			this.setTalkActive(key, true, { forceSend: true, momentary: false })
 			this.sendKeyState(key, 'talk', 'momentary', false)
+		} else if (wasMomentary) {
+			// The press simply ended. It has to be released on the layer it was
+			// taken on: a latched `false` says nothing about a press, so the
+			// heartbeat would go on renewing it and the mic would stay open with
+			// nobody holding the key.
+			this.setTalkActive(key, newEffective, { forceSend: true, momentary: true })
 		} else {
 			this.setTalkActive(key, newEffective)
 		}
@@ -2313,6 +2319,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		if (wasMomentary && newEffective && (this.listenControlState.latched.get(key.target_id) ?? false)) {
 			this.setListenActive(key, true, { forceSend: true, momentary: false })
 			this.sendKeyState(key, 'listen', 'momentary', false)
+		} else if (wasMomentary) {
+			// Released on the layer it was held on - see the talk half.
+			this.setListenActive(key, newEffective, { forceSend: true, momentary: true })
 		} else {
 			this.setListenActive(key, newEffective)
 		}
@@ -2367,6 +2376,13 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 		const controlState = kind === 'talk' ? this.talkControlState : this.listenControlState
 		controlState.pressing.set(key.target_id, false)
+
+		// A set action can land while the key is still held down. The press has
+		// to be let go of on its own layer, or the heartbeat keeps renewing it
+		// underneath whatever the latch is told to do.
+		if (kind === 'talk' && this.pressApplied.delete(key.target_id)) {
+			this.sendKeyState(key, 'talk', 'momentary', false)
+		}
 
 		switch (mode) {
 			case 'toggle': {
