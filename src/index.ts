@@ -177,6 +177,26 @@ const LISTEN_SHADOW = combineRgb(0, 20, 8)
 const TALK_BORDER = combineRgb(198, 104, 104)
 const LISTEN_BORDER = combineRgb(96, 176, 128)
 const BORDER_WIDTH = 2
+
+/**
+ * Key label size, as a percentage of the height of the box holding it, and the
+ * box height that percentage is written for.
+ *
+ * Companion sizes text against its own element rather than the button, so the
+ * same percentage in a taller box draws larger text. A talk key has no level
+ * rail and so a taller label box than a listen or combined key; without
+ * compensating, its name came out half again as big as its neighbours'.
+ */
+const KEY_LABEL_FONTSIZE = 32
+const KEY_LABEL_BOX_HEIGHT = 62
+
+/**
+ * The percentage that renders KEY_LABEL_FONTSIZE at the reference height.
+ * Left unrounded: a whole number here is off by enough to see.
+ */
+function labelFontsize(boxHeight: number): number {
+	return (KEY_LABEL_FONTSIZE * KEY_LABEL_BOX_HEIGHT) / boxHeight
+}
 /// Fallback until `login_success` tells us what the server actually wants.
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000
 const DEFAULT_SERVER_PORT = 55678
@@ -1317,6 +1337,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		const accent = talk ? TALK_ACCENT : LISTEN_ACCENT
 		const shadow = talk ? TALK_SHADOW : LISTEN_SHADOW
 		const showLevel = !talk
+		const labelBoxHeight = showLevel ? KEY_LABEL_BOX_HEIGHT : 88
 
 		return {
 			type: 'layered' as const,
@@ -1366,9 +1387,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					x: 6,
 					y: showLevel ? 12 : 6,
 					width: 88,
-					height: showLevel ? 62 : 88,
+					height: labelBoxHeight,
 					text: this.expr<string>('$(local:name)'),
-					fontsize: 32,
+					fontsize: labelFontsize(labelBoxHeight),
 					fontsizeAllowShrink: true,
 					weight: 'bold' as const,
 					color: combineRgb(255, 255, 255),
@@ -1527,9 +1548,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					x: 4,
 					y: 12,
 					width: 92,
-					height: 62,
+					height: KEY_LABEL_BOX_HEIGHT,
 					text: this.expr<string>('$(local:name)'),
-					fontsize: 32,
+					fontsize: labelFontsize(KEY_LABEL_BOX_HEIGHT),
 					fontsizeAllowShrink: true,
 					weight: 'bold' as const,
 					color: combineRgb(255, 255, 255),
