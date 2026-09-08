@@ -1,4 +1,5 @@
 import {
+	ButtonGraphicsDecorationType,
 	InstanceBase,
 	InstanceStatus,
 	Regex,
@@ -12,6 +13,7 @@ import {
 	type CompanionVariableDefinitions,
 	type CompanionVariableValues,
 	type DropdownChoice,
+	type JsonValue,
 	type SomeCompanionConfigField,
 } from '@companion-module/base'
 import WebSocket, { type RawData } from 'ws'
@@ -19,7 +21,9 @@ import WebSocket, { type RawData } from 'ws'
 type ConnectionMode = 'server' | 'client'
 type GlobalMode = 'talk' | 'mute'
 type SetMode = 'toggle' | 'on' | 'off'
-type KeySelectionMode = 'index' | 'target'
+type KeySelectionMode = 'index' | 'target' | 'selected'
+type PressBehaviour = 'auto' | 'momentary' | 'latch'
+type LatchMode = 'off' | 'momentary' | 'latched'
 
 type Message = Record<string, unknown>
 
@@ -133,10 +137,22 @@ const KEEP_ALIVE_INTERVAL_MS = 30_000
 const DEFAULT_SERVER_PORT = 55678
 const DEFAULT_CLIENT_PORT = 9100
 const MIN_LISTEN_LEVEL_DB = -100
+/** The quietest level worth showing on a meter; -100 dB is silence and wastes the scale. */
+const MIN_LISTEN_LEVEL_DB_DISPLAY = -40
+const MAX_LISTEN_LEVEL_DB = 6
+/** One detent of a rotary encoder. */
+const LEVEL_STEP_DB = 1
 
 const keySelectChoices = [
-	{ id: 'target', label: 'By target' },
+	{ id: 'target', label: 'Specific key' },
 	{ id: 'index', label: 'By index' },
+	{ id: 'selected', label: 'Selected key' },
+]
+
+const pressBehaviourChoices = [
+	{ id: 'auto', label: 'Follow key config (latch if allowed)' },
+	{ id: 'momentary', label: 'Momentary only' },
+	{ id: 'latch', label: 'Latch only (toggle on press)' },
 ]
 
 const setModeChoices = [
@@ -203,6 +219,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 	private talkControlState: KeyControlState = this.createControlState()
 	private listenControlState: KeyControlState = this.createControlState()
+	private selectedKeyToken: string | undefined
 	private globalLatched = false
 	private globalPressing = false
 	private globalPressStart: number | undefined
@@ -564,6 +581,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		}
 
 		this.syncLatchStateFromServer()
+		this.reconcileSelection()
 		this.setupDefinitions()
 	}
 
@@ -594,20 +612,40 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 	private getActionDefinitions(): CompanionActionDefinitions {
 		return {
-			talk_down: {
-				name: 'Talk key down',
+			select_key: {
+				name: 'Select key',
+				description: 'Make this the key that "selected key" actions and feedbacks act on',
 				options: this.getKeySelectorOptions(),
 				callback: async (action) => {
 					const key = this.resolveKey(action.options)
-					if (key) this.onTalkDown(key)
+					if (key) this.selectKey(key)
+				},
+			},
+			talk_down: {
+				name: 'Talk key down',
+				options: [
+					...this.getKeySelectorOptions(),
+					this.getPressBehaviourOption(),
+					{
+						type: 'checkbox' as const,
+						id: 'also_select',
+						label: 'Also select this key',
+						default: true,
+					},
+				],
+				callback: async (action) => {
+					const key = this.resolveKey(action.options)
+					if (!key) return
+					if (action.options.also_select !== false) this.selectKey(key)
+					this.onTalkDown(key, this.readPressBehaviour(action.options))
 				},
 			},
 			talk_up: {
 				name: 'Talk key up',
-				options: this.getKeySelectorOptions(),
+				options: [...this.getKeySelectorOptions(), this.getPressBehaviourOption()],
 				callback: async (action) => {
 					const key = this.resolveKey(action.options)
-					if (key) this.onTalkUp(key)
+					if (key) this.onTalkUp(key, this.readPressBehaviour(action.options))
 				},
 			},
 			talk_set: {
@@ -621,18 +659,29 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			},
 			listen_down: {
 				name: 'Listen key down',
-				options: this.getKeySelectorOptions(),
+				options: [
+					...this.getKeySelectorOptions(),
+					this.getPressBehaviourOption(),
+					{
+						type: 'checkbox' as const,
+						id: 'also_select',
+						label: 'Also select this key',
+						default: true,
+					},
+				],
 				callback: async (action) => {
 					const key = this.resolveKey(action.options)
-					if (key) this.onListenDown(key)
+					if (!key) return
+					if (action.options.also_select !== false) this.selectKey(key)
+					this.onListenDown(key, this.readPressBehaviour(action.options))
 				},
 			},
 			listen_up: {
 				name: 'Listen key up',
-				options: this.getKeySelectorOptions(),
+				options: [...this.getKeySelectorOptions(), this.getPressBehaviourOption()],
 				callback: async (action) => {
 					const key = this.resolveKey(action.options)
-					if (key) this.onListenUp(key)
+					if (key) this.onListenUp(key, this.readPressBehaviour(action.options))
 				},
 			},
 			listen_set: {
@@ -755,6 +804,96 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					return key ? this.getListenActive(key) : false
 				},
 			},
+			talk_latched: {
+				type: 'boolean',
+				name: 'Talk latched',
+				description: 'Talk is on and holding itself, rather than being held down',
+				defaultStyle: {
+					bgcolor: combineRgb(255, 0, 0),
+					color: combineRgb(255, 255, 255),
+				},
+				options: this.getKeySelectorOptions(),
+				callback: async (feedback) => {
+					const key = this.resolveKey(feedback.options)
+					return key ? this.getLatchMode(key, 'talk') === 'latched' : false
+				},
+			},
+			talk_momentary: {
+				type: 'boolean',
+				name: 'Talk held (momentary)',
+				description: 'Talk is on only for as long as the key is held',
+				defaultStyle: {
+					bgcolor: combineRgb(160, 0, 0),
+					color: combineRgb(255, 255, 255),
+				},
+				options: this.getKeySelectorOptions(),
+				callback: async (feedback) => {
+					const key = this.resolveKey(feedback.options)
+					return key ? this.getLatchMode(key, 'talk') === 'momentary' : false
+				},
+			},
+			listen_latched: {
+				type: 'boolean',
+				name: 'Listen latched',
+				description: 'Listen is on and holding itself, rather than being held down',
+				defaultStyle: {
+					bgcolor: combineRgb(0, 180, 0),
+					color: combineRgb(255, 255, 255),
+				},
+				options: this.getKeySelectorOptions(),
+				callback: async (feedback) => {
+					const key = this.resolveKey(feedback.options)
+					return key ? this.getLatchMode(key, 'listen') === 'latched' : false
+				},
+			},
+			listen_momentary: {
+				type: 'boolean',
+				name: 'Listen held (momentary)',
+				description: 'Listen is on only for as long as the key is held',
+				defaultStyle: {
+					bgcolor: combineRgb(0, 120, 0),
+					color: combineRgb(255, 255, 255),
+				},
+				options: this.getKeySelectorOptions(),
+				callback: async (feedback) => {
+					const key = this.resolveKey(feedback.options)
+					return key ? this.getLatchMode(key, 'listen') === 'momentary' : false
+				},
+			},
+			key_selected: {
+				type: 'boolean',
+				name: 'Key is selected',
+				defaultStyle: {
+					color: combineRgb(255, 255, 255),
+				},
+				options: this.getKeySelectorOptions(),
+				callback: async (feedback) => {
+					const key = this.resolveKey(feedback.options)
+					if (!key) return false
+					return this.keyTargetToken(key) === this.selectedKeyToken
+				},
+			},
+			key_listen_level_db: {
+				type: 'value',
+				name: 'Listen level (dB)',
+				description: 'The listen level as a number, for driving a gauge or text',
+				options: this.getKeySelectorOptions(),
+				callback: async (feedback) => {
+					const key = this.resolveKey(feedback.options)
+					if (!key) return MIN_LISTEN_LEVEL_DB
+					return Number(this.getListenLevelDb(key).toFixed(1))
+				},
+			},
+			key_name: {
+				type: 'value',
+				name: 'Key display name',
+				description: 'The name of the key, for use as button text',
+				options: this.getKeySelectorOptions(),
+				callback: async (feedback) => {
+					const key = this.resolveKey(feedback.options)
+					return key ? key.display_name : ''
+				},
+			},
 			user_connected: {
 				type: 'boolean',
 				name: 'User connected',
@@ -825,7 +964,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				],
 			},
 		}
-		const globalPresets = ['global_button']
+		presets['selected_volume'] = this.createSelectedVolumePreset()
+
+		const globalPresets = ['global_button', 'selected_volume']
+		const keyPresets: string[] = []
 		const talkIndexPresets: string[] = []
 		const listenIndexPresets: string[] = []
 		const talkTargetPresets: string[] = []
@@ -835,12 +977,19 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			const targetToken = this.keyTargetToken(key)
 			const safeName = sanitizeName(key.display_name)
 
+			const keyId = `key_${index}`
+			presets[keyId] = this.createLayeredKeyPreset(
+				`${key.display_name} (intercom key)`,
+				this.presetKeyOptions('target', { index, target: targetToken }),
+			)
+			keyPresets.push(keyId)
+
 			const talkIndexId = `talk_index_${index}`
 			presets[talkIndexId] = this.createKeyPreset(
 				`Talk key ${index}`,
 				`$(livematrix:key_${index}_name)\nTALK`,
 				'talk',
-				{ selection_mode: 'index', key_index: index },
+				this.presetKeyOptions('index', { index, target: targetToken }),
 			)
 			talkIndexPresets.push(talkIndexId)
 
@@ -849,7 +998,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				`Listen key ${index}`,
 				`$(livematrix:key_${index}_name)\nLISTEN`,
 				'listen',
-				{ selection_mode: 'index', key_index: index },
+				this.presetKeyOptions('index', { index, target: targetToken }),
 			)
 			listenIndexPresets.push(listenIndexId)
 
@@ -858,7 +1007,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				`Talk ${key.display_name}`,
 				`${key.display_name}\nTALK`,
 				'talk',
-				{ selection_mode: 'target', key_target: targetToken },
+				this.presetKeyOptions('target', { index, target: targetToken }),
 			)
 			talkTargetPresets.push(talkTargetId)
 
@@ -867,12 +1016,17 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				`Listen ${key.display_name}`,
 				`${key.display_name}\nLISTEN`,
 				'listen',
-				{ selection_mode: 'target', key_target: targetToken },
+				this.presetKeyOptions('target', { index, target: targetToken }),
 			)
 			listenTargetPresets.push(listenTargetId)
 		}
 
 		const structure: CompanionPresetSection<LiveMatrixManifest>[] = [
+			{
+				id: 'keys',
+				name: 'Intercom Keys',
+				definitions: keyPresets,
+			},
 			{
 				id: 'global',
 				name: 'Global',
@@ -903,6 +1057,313 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		return { structure, presets }
 	}
 
+	/** Wrap a Companion expression so it is evaluated per button rather than taken literally. */
+	private expr<T>(expression: string) {
+		return { isExpression: true as const, value: expression } as unknown as T
+	}
+
+	/**
+	 * Wrap a literal for a feedback style override. Companion drops overrides whose value
+	 * is not in expression-or-value form, which silently disables the whole feedback.
+	 */
+	private overrideValue<T extends JsonValue>(value: T) {
+		return { isExpression: false as const, value }
+	}
+
+	/**
+	 * An intercom key drawn as two gradient halves: listen fills the left half green,
+	 * talk fills the right half red. Both fade to near-black towards the middle so the
+	 * label stays readable, and read as a saturated edge at the outside.
+	 * A bar along the bottom shows the listen level.
+	 */
+	private createLayeredKeyPreset(name: string, keyOptions: CompanionOptionValues) {
+
+		return {
+			type: 'layered' as const,
+			name,
+			canvas: { decoration: ButtonGraphicsDecorationType.None },
+			elements: [
+				{
+					id: 'listen-fill',
+					type: 'gauge' as const,
+					name: 'Listen fill',
+					x: 0,
+					y: 0,
+					width: 50,
+					height: 100,
+					orientation: 'horizontal' as const,
+					value: 100,
+					min: 0,
+					max: 100,
+					fillEnabled: true,
+					multiColour: true,
+					trackStyle: 'transparent' as const,
+					trackAmount: 0,
+					enabled: false,
+					stops: [
+						{ value: 0, color: combineRgb(0, 220, 90), gradient: true },
+						{ value: 100, color: combineRgb(0, 20, 8), gradient: true },
+					],
+				},
+				{
+					id: 'talk-fill',
+					type: 'gauge' as const,
+					name: 'Talk fill',
+					x: 50,
+					y: 0,
+					width: 50,
+					height: 100,
+					orientation: 'horizontal' as const,
+					value: 100,
+					min: 0,
+					max: 100,
+					fillEnabled: true,
+					multiColour: true,
+					trackStyle: 'transparent' as const,
+					trackAmount: 0,
+					enabled: false,
+					stops: [
+						{ value: 0, color: combineRgb(24, 0, 0), gradient: true },
+						{ value: 100, color: combineRgb(255, 40, 40), gradient: true },
+					],
+				},
+				{
+					id: 'listen-latched-bar',
+					type: 'box' as const,
+					name: 'Listen latched',
+					x: 0,
+					y: 0,
+					width: 50,
+					height: 7,
+					color: combineRgb(0, 220, 90),
+					enabled: false,
+				},
+				{
+					id: 'talk-latched-bar',
+					type: 'box' as const,
+					name: 'Talk latched',
+					x: 50,
+					y: 0,
+					width: 50,
+					height: 7,
+					color: combineRgb(255, 40, 40),
+					enabled: false,
+				},
+				{
+					id: 'label',
+					type: 'text' as const,
+					name: 'Key name',
+					x: 4,
+					y: 12,
+					width: 92,
+					height: 62,
+					text: this.expr<string>('$(local:name)'),
+					fontsize: 16,
+					fontsizeAllowShrink: true,
+					weight: 'bold' as const,
+					color: combineRgb(255, 255, 255),
+					halign: 'center' as const,
+					valign: 'center' as const,
+				},
+				{
+					id: 'level-bar',
+					type: 'gauge' as const,
+					name: 'Listen level',
+					x: 8,
+					y: 84,
+					width: 84,
+					height: 8,
+					orientation: 'horizontal' as const,
+					value: this.expr<number>('$(local:level)'),
+					min: MIN_LISTEN_LEVEL_DB_DISPLAY,
+					max: MAX_LISTEN_LEVEL_DB,
+					fillEnabled: true,
+					roundedEnds: true,
+					trackStyle: 'dimmed' as const,
+					// How much colour the unfilled rail keeps; low so the fill reads as a level.
+					trackAmount: 18,
+					multiColour: true,
+					stops: [
+						{ value: MIN_LISTEN_LEVEL_DB_DISPLAY, color: combineRgb(70, 130, 180), gradient: true },
+						{ value: 0, color: combineRgb(200, 225, 255), gradient: true },
+						{ value: MAX_LISTEN_LEVEL_DB, color: combineRgb(255, 190, 60), gradient: false },
+					],
+				},
+				{
+					id: 'selected-outline',
+					type: 'box' as const,
+					name: 'Selected',
+					x: 0,
+					y: 0,
+					width: 100,
+					height: 100,
+					// Transparent fill: opacity would fade the border away with it.
+					color: combineRgb(0, 0, 0, 0),
+					borderWidth: 4,
+					borderColor: combineRgb(255, 255, 255),
+					borderPosition: 'inside' as const,
+					enabled: false,
+				},
+			],
+			localVariables: [
+				{
+					variableName: 'name',
+					variableType: 'feedback' as const,
+					feedbackId: 'key_name' as const,
+					options: keyOptions,
+				},
+				{
+					variableName: 'level',
+					variableType: 'feedback' as const,
+					feedbackId: 'key_listen_level_db' as const,
+					options: keyOptions,
+				},
+			],
+			feedbacks: [
+				{
+					feedbackId: 'listen_active' as const,
+					options: keyOptions,
+					styleOverrides: [{ elementId: 'listen-fill', elementProperty: 'enabled', override: this.overrideValue(true) }],
+				},
+				{
+					feedbackId: 'talk_active' as const,
+					options: keyOptions,
+					styleOverrides: [{ elementId: 'talk-fill', elementProperty: 'enabled', override: this.overrideValue(true) }],
+				},
+				{
+					feedbackId: 'listen_latched' as const,
+					options: keyOptions,
+					styleOverrides: [{ elementId: 'listen-latched-bar', elementProperty: 'enabled', override: this.overrideValue(true) }],
+				},
+				{
+					feedbackId: 'talk_latched' as const,
+					options: keyOptions,
+					styleOverrides: [{ elementId: 'talk-latched-bar', elementProperty: 'enabled', override: this.overrideValue(true) }],
+				},
+				{
+					feedbackId: 'key_selected' as const,
+					options: keyOptions,
+					styleOverrides: [{ elementId: 'selected-outline', elementProperty: 'enabled', override: this.overrideValue(true) }],
+				},
+			],
+			steps: [
+				{
+					down: [{ actionId: 'talk_down' as const, options: { ...keyOptions, press_behaviour: 'auto', also_select: true } }],
+					up: [{ actionId: 'talk_up' as const, options: { ...keyOptions, press_behaviour: 'auto' } }],
+					rotate_left: [
+						{ actionId: 'listen_level_delta' as const, options: { ...keyOptions, delta_db: -LEVEL_STEP_DB } },
+					],
+					rotate_right: [
+						{ actionId: 'listen_level_delta' as const, options: { ...keyOptions, delta_db: LEVEL_STEP_DB } },
+					],
+				},
+			],
+		}
+	}
+
+	/**
+	 * A rotary control for whichever key is currently selected: turn to trim the level,
+	 * press to return it to unity.
+	 */
+	private createSelectedVolumePreset() {
+		const selectedOptions = this.presetKeyOptions('selected')
+
+		return {
+			type: 'layered' as const,
+			name: 'Selected key volume',
+			canvas: { decoration: ButtonGraphicsDecorationType.None },
+			elements: [
+				{
+					id: 'level-ring',
+					type: 'gauge' as const,
+					name: 'Level ring',
+					x: 6,
+					y: 6,
+					width: 88,
+					height: 88,
+					orientation: 'ring' as const,
+					value: this.expr<number>('$(local:level)'),
+					min: MIN_LISTEN_LEVEL_DB_DISPLAY,
+					max: MAX_LISTEN_LEVEL_DB,
+					// Degrees clockwise from the top; this sweeps 270 degrees with a gap at the bottom.
+					startAngle: 225,
+					endAngle: 135,
+					ringWidth: 10,
+					roundedEnds: true,
+					fillEnabled: true,
+					trackStyle: 'dimmed' as const,
+					// How much colour the unfilled rail keeps; low so the fill reads as a level.
+					trackAmount: 18,
+					multiColour: true,
+					stops: [
+						{ value: MIN_LISTEN_LEVEL_DB_DISPLAY, color: combineRgb(70, 130, 180), gradient: true },
+						{ value: 0, color: combineRgb(200, 225, 255), gradient: true },
+						{ value: MAX_LISTEN_LEVEL_DB, color: combineRgb(255, 190, 60), gradient: false },
+					],
+				},
+				{
+					id: 'name',
+					type: 'text' as const,
+					name: 'Selected key',
+					x: 12,
+					y: 22,
+					width: 76,
+					height: 26,
+					text: this.expr<string>('$(local:name)'),
+					fontsize: 13,
+					fontsizeAllowShrink: true,
+					weight: 'bold' as const,
+					color: combineRgb(255, 255, 255),
+					halign: 'center' as const,
+					valign: 'center' as const,
+				},
+				{
+					id: 'level-text',
+					type: 'text' as const,
+					name: 'Level',
+					x: 12,
+					y: 48,
+					width: 76,
+					height: 24,
+					text: this.expr<string>('$(local:level) dB'),
+					fontsize: 14,
+					fontsizeAllowShrink: true,
+					font: 'companion-mono' as const,
+					color: combineRgb(200, 225, 255),
+					halign: 'center' as const,
+					valign: 'center' as const,
+				},
+			],
+			localVariables: [
+				{
+					variableName: 'name',
+					variableType: 'feedback' as const,
+					feedbackId: 'key_name' as const,
+					options: selectedOptions,
+				},
+				{
+					variableName: 'level',
+					variableType: 'feedback' as const,
+					feedbackId: 'key_listen_level_db' as const,
+					options: selectedOptions,
+				},
+			],
+			feedbacks: [],
+			steps: [
+				{
+					down: [{ actionId: 'listen_level' as const, options: { ...selectedOptions, level: 0 } }],
+					up: [],
+					rotate_left: [
+						{ actionId: 'listen_level_delta' as const, options: { ...selectedOptions, delta_db: -LEVEL_STEP_DB } },
+					],
+					rotate_right: [
+						{ actionId: 'listen_level_delta' as const, options: { ...selectedOptions, delta_db: LEVEL_STEP_DB } },
+					],
+				},
+			],
+		}
+	}
+
 	private createKeyPreset(name: string, text: string, mode: 'talk' | 'listen', options: CompanionOptionValues) {
 		const feedbackId = mode === 'talk' ? 'talk_active' : 'listen_active'
 		const downAction = mode === 'talk' ? 'talk_down' : 'listen_down'
@@ -927,8 +1388,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			],
 			steps: [
 				{
-					down: [{ actionId: downAction, options }],
-					up: [{ actionId: upAction, options }],
+					down: [
+						{ actionId: downAction, options: { ...options, press_behaviour: 'auto', also_select: true } },
+					],
+					up: [{ actionId: upAction, options: { ...options, press_behaviour: 'auto' } }],
 				},
 			],
 		}
@@ -954,6 +1417,12 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			global_mode: { name: 'Global mode' },
 			global_active: { name: 'Global active' },
 			key_count: { name: 'Key count' },
+			selected_key_index: { name: 'Selected key index' },
+			selected_key_name: { name: 'Selected key display name' },
+			selected_key_target_id: { name: 'Selected key target ID' },
+			selected_key_talk: { name: 'Selected key talk active' },
+			selected_key_listen: { name: 'Selected key listen active' },
+			selected_key_level: { name: 'Selected key listen level dB' },
 		}
 
 		const seenTargetNames = new Set<string>()
@@ -964,6 +1433,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			variables[`key_${index}_talk`] = { name: `Key ${index} talk active` }
 			variables[`key_${index}_listen`] = { name: `Key ${index} listen active` }
 			variables[`key_${index}_level`] = { name: `Key ${index} listen level dB` }
+			variables[`key_${index}_talk_mode`] = { name: `Key ${index} talk mode (off/momentary/latched)` }
+			variables[`key_${index}_listen_mode`] = { name: `Key ${index} listen mode (off/momentary/latched)` }
 			variables[`tid_${key.target_id}_name`] = { name: `${key.display_name} name` }
 			variables[`tid_${key.target_id}_talk`] = { name: `${key.display_name} talk active` }
 			variables[`tid_${key.target_id}_listen`] = { name: `${key.display_name} listen active` }
@@ -991,6 +1462,14 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			key_count: this.keys.length,
 		}
 
+		const selectedKey = this.getSelectedKey()
+		values.selected_key_index = selectedKey ? this.keys.indexOf(selectedKey) : -1
+		values.selected_key_name = selectedKey?.display_name ?? ''
+		values.selected_key_target_id = selectedKey?.target_id ?? ''
+		values.selected_key_talk = selectedKey ? this.getTalkActive(selectedKey) : false
+		values.selected_key_listen = selectedKey ? this.getListenActive(selectedKey) : false
+		values.selected_key_level = selectedKey ? this.formatListenLevelDb(this.getListenLevelDb(selectedKey)) : ''
+
 		const seenTargetNames = new Set<string>()
 		for (const [index, key] of this.keys.entries()) {
 			const talk = this.getTalkActive(key)
@@ -1004,6 +1483,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			values[`key_${index}_talk`] = talk
 			values[`key_${index}_listen`] = listen
 			values[`key_${index}_level`] = level
+			values[`key_${index}_talk_mode`] = this.getLatchMode(key, 'talk')
+			values[`key_${index}_listen_mode`] = this.getLatchMode(key, 'listen')
 
 			values[`tid_${key.target_id}_name`] = key.display_name
 			values[`tid_${key.target_id}_talk`] = talk
@@ -1051,6 +1532,36 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		]
 	}
 
+	private getPressBehaviourOption() {
+		return {
+			type: 'dropdown' as const,
+			id: 'press_behaviour',
+			label: 'Press behaviour',
+			default: 'auto',
+			choices: pressBehaviourChoices,
+		}
+	}
+
+	/**
+	 * Option values for a key selector as a preset must supply them: every field the
+	 * selector declares needs a value, including the ones the visibility expressions
+	 * hide, or the options fail validation when the action runs.
+	 */
+	private presetKeyOptions(
+		mode: KeySelectionMode,
+		key?: { index?: number; target?: string },
+	): CompanionOptionValues {
+		return {
+			selection_mode: mode,
+			key_index: key?.index ?? 0,
+			key_target: key?.target ?? (this.keys[0] ? this.keyTargetToken(this.keys[0]) : ''),
+		}
+	}
+
+	private readPressBehaviour(options: CompanionOptionValues): PressBehaviour {
+		return (options.press_behaviour as PressBehaviour | undefined) ?? 'auto'
+	}
+
 	private getSetModeOption(id: string) {
 		return {
 			type: 'dropdown' as const,
@@ -1070,6 +1581,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 	private resolveKey(options: CompanionOptionValues): KeyConfig | undefined {
 		const selectionMode = (options.selection_mode as KeySelectionMode | undefined) ?? 'target'
+		if (selectionMode === 'selected') return this.getSelectedKey()
 		if (selectionMode === 'index') {
 			const index = Number(options.key_index ?? 0)
 			if (!Number.isInteger(index) || index < 0 || index >= this.keys.length) return undefined
@@ -1084,20 +1596,54 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		return `${key.target_type}:${key.target_id}`
 	}
 
-	private onTalkDown(key: KeyConfig): void {
+	/** The key that volume actions and 'selected key' feedbacks operate on. */
+	private getSelectedKey(): KeyConfig | undefined {
+		if (!this.selectedKeyToken) return undefined
+		return this.keys.find((key) => this.keyTargetToken(key) === this.selectedKeyToken)
+	}
+
+	private selectKey(key: KeyConfig): void {
+		const token = this.keyTargetToken(key)
+		if (this.selectedKeyToken === token) return
+		this.selectedKeyToken = token
+		this.checkFeedbacks('key_selected')
+		this.pushVariableValues()
+	}
+
+	/**
+	 * Drop the selection if the selected key is gone, and select something sensible
+	 * on first load so the volume knob is never pointing at nothing.
+	 */
+	private reconcileSelection(): void {
+		if (this.selectedKeyToken && this.getSelectedKey()) return
+		const fallback = this.keys.find((key) => key.can_listen) ?? this.keys[0]
+		this.selectedKeyToken = fallback ? this.keyTargetToken(fallback) : undefined
+	}
+
+	private onTalkDown(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
 		if (!key.can_talk) return
+
+		// Latch-only keys toggle on the press and never hold, so there is nothing
+		// momentary to start.
+		if (this.latchesOnPress(key, 'talk', behaviour)) {
+			this.onSetKeyMode(key, 'talk', 'toggle')
+			return
+		}
+
 		this.talkControlState.pressStart.set(key.target_id, Date.now())
 		this.talkControlState.pressing.set(key.target_id, true)
 		this.setTalkActive(key, this.getEffectiveState(this.talkControlState, key.target_id))
 	}
 
-	private onTalkUp(key: KeyConfig): void {
+	private onTalkUp(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
 		if (!key.can_talk) return
+		if (this.latchesOnPress(key, 'talk', behaviour)) return
+
 		const wasShortPress = this.wasShortPress(this.talkControlState, key.target_id)
 		const wasMomentary = this.talkControlState.pressing.get(key.target_id) ?? false
 
 		this.talkControlState.pressing.set(key.target_id, false)
-		if (key.allow_talk_latching && wasShortPress) {
+		if (this.latchesOnRelease(key, 'talk', behaviour) && wasShortPress) {
 			this.talkControlState.latched.set(key.target_id, !(this.talkControlState.latched.get(key.target_id) ?? false))
 		}
 
@@ -1110,20 +1656,28 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		}
 	}
 
-	private onListenDown(key: KeyConfig): void {
+	private onListenDown(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
 		if (!key.can_listen) return
+
+		if (this.latchesOnPress(key, 'listen', behaviour)) {
+			this.onSetKeyMode(key, 'listen', 'toggle')
+			return
+		}
+
 		this.listenControlState.pressStart.set(key.target_id, Date.now())
 		this.listenControlState.pressing.set(key.target_id, true)
 		this.setListenActive(key, this.getEffectiveState(this.listenControlState, key.target_id))
 	}
 
-	private onListenUp(key: KeyConfig): void {
+	private onListenUp(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
 		if (!key.can_listen) return
+		if (this.latchesOnPress(key, 'listen', behaviour)) return
+
 		const wasShortPress = this.wasShortPress(this.listenControlState, key.target_id)
 		const wasMomentary = this.listenControlState.pressing.get(key.target_id) ?? false
 
 		this.listenControlState.pressing.set(key.target_id, false)
-		if (key.allow_listen_latching && wasShortPress) {
+		if (this.latchesOnRelease(key, 'listen', behaviour) && wasShortPress) {
 			this.listenControlState.latched.set(key.target_id, !(this.listenControlState.latched.get(key.target_id) ?? false))
 		}
 
@@ -1134,6 +1688,32 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		} else {
 			this.setListenActive(key, newEffective)
 		}
+	}
+
+	/**
+	 * 'latch' presses toggle immediately and hold nothing; the other behaviours run
+	 * the press as momentary and decide about latching on release.
+	 */
+	private latchesOnPress(key: KeyConfig, kind: 'talk' | 'listen', behaviour: PressBehaviour): boolean {
+		return behaviour === 'latch' && this.keyAllowsLatching(key, kind)
+	}
+
+	private latchesOnRelease(key: KeyConfig, kind: 'talk' | 'listen', behaviour: PressBehaviour): boolean {
+		if (behaviour === 'momentary') return false
+		if (behaviour === 'latch') return false
+		return this.keyAllowsLatching(key, kind)
+	}
+
+	private keyAllowsLatching(key: KeyConfig, kind: 'talk' | 'listen'): boolean {
+		return kind === 'talk' ? key.allow_talk_latching : key.allow_listen_latching
+	}
+
+	/** Whether a key is off, held down momentarily, or latched on. */
+	private getLatchMode(key: KeyConfig, kind: 'talk' | 'listen'): LatchMode {
+		const controlState = kind === 'talk' ? this.talkControlState : this.listenControlState
+		const active = kind === 'talk' ? this.getTalkActive(key) : this.getListenActive(key)
+		if (!active) return 'off'
+		return controlState.latched.get(key.target_id) ? 'latched' : 'momentary'
 	}
 
 	private onSetKeyMode(key: KeyConfig, kind: 'talk' | 'listen', mode: SetMode): void {
@@ -1280,7 +1860,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		}
 
 		this.pushVariableValues()
-		this.checkFeedbacks('talk_active')
+		this.checkFeedbacks('talk_active', 'talk_latched', 'talk_momentary')
 	}
 
 	private setListenActive(
@@ -1319,7 +1899,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		}
 
 		this.pushVariableValues()
-		this.checkFeedbacks('listen_active')
+		this.checkFeedbacks('listen_active', 'listen_latched', 'listen_momentary')
 	}
 
 	private startKeepAlive(controlState: KeyControlState, targetId: string, messageType: string): void {
