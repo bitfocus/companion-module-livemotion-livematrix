@@ -18,7 +18,6 @@ import {
 import WebSocket, { type RawData } from 'ws'
 
 type ConnectionMode = 'server' | 'client'
-type GlobalMode = 'talk' | 'mute'
 type SetMode = 'toggle' | 'on' | 'off'
 type KeySelectionMode = 'index' | 'target' | 'selected'
 type PressBehaviour = 'auto' | 'momentary' | 'latch'
@@ -58,8 +57,6 @@ interface UserState {
 	talk_active: Record<string, boolean>
 	listen_active: Record<string, boolean>
 	listen_level: Record<string, number>
-	global_mode: GlobalMode
-	global_active: boolean
 	party_line_talk_active: Record<string, boolean>
 	party_line_listen_active: Record<string, boolean>
 	party_line_listen_level: Record<string, number>
@@ -109,6 +106,30 @@ interface LoginFailureMessage {
 interface ErrorMessage {
 	type: 'error'
 	message: string
+	/** Machine-readable reason, when the server gives one. */
+	code?: string
+}
+
+/**
+ * The user's one microphone, as the server sees it: which device holds it and
+ * whether it is muted. Companion never holds the mic itself; it only mutes and
+ * unmutes whichever device does.
+ */
+interface MicState {
+	/** The device holding the mic, or null when nobody does. */
+	device_id: string | null
+	device_name: string | null
+	holder_online: boolean
+	muted: boolean
+}
+
+interface MicStateMessage {
+	type: 'mic_state'
+	device_id?: string | null
+	device_name?: string | null
+	holder_online?: boolean
+	muted?: boolean
+	is_mine?: boolean
 }
 
 type LiveMatrixConfig = {
@@ -237,21 +258,23 @@ const setModeChoices = [
 	{ id: 'off', label: 'Off' },
 ]
 
-const globalModeChoices = [
-	{ id: 'talk', label: 'Talk' },
-	{ id: 'mute', label: 'Mute' },
-]
-
 function createEmptyState(): UserState {
 	return {
 		talk_active: {},
 		listen_active: {},
 		listen_level: {},
-		global_mode: 'mute',
-		global_active: false,
 		party_line_talk_active: {},
 		party_line_listen_active: {},
 		party_line_listen_level: {},
+	}
+}
+
+function createEmptyMicState(): MicState {
+	return {
+		device_id: null,
+		device_name: null,
+		holder_online: false,
+		muted: false,
 	}
 }
 
@@ -293,6 +316,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	private state: UserState = createEmptyState()
 	/** The latched layer of the last state update, when the server sends one. */
 	private latchedState: UserState | undefined
+	private mic: MicState = createEmptyMicState()
+	/** The last mic error the server reported, cleared by the next mic state. */
+	private micError = ''
 
 	private talkControlState: KeyControlState = this.createControlState()
 	private listenControlState: KeyControlState = this.createControlState()
@@ -320,9 +346,6 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	private heldKeys = new Map<string, MomentaryHold>()
 	private heartbeatTimer: NodeJS.Timeout | undefined
 	private heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS
-	private globalLatched = false
-	private globalPressing = false
-	private globalPressStart: number | undefined
 
 	async init(config: LiveMatrixConfig, _isFirstInit: boolean, secrets: LiveMatrixSecrets): Promise<void> {
 		this.config = config
@@ -579,7 +602,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			case 'user_disconnected':
 				this.handleUserDisconnected(message as unknown as UserDisconnectedMessage)
 				break
-			case 'remote_mute':
+			case 'mic_state':
+				this.handleMicState(message as unknown as MicStateMessage)
 				break
 			case 'error':
 				this.handleServerError(message as unknown as ErrorMessage)
@@ -630,8 +654,6 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			talk_active: { ...(raw?.talk_active ?? {}) },
 			listen_active: { ...(raw?.listen_active ?? {}) },
 			listen_level: { ...(raw?.listen_level ?? {}) },
-			global_mode: raw?.global_mode ?? 'mute',
-			global_active: raw?.global_active ?? false,
 			party_line_talk_active: { ...(raw?.party_line_talk_active ?? {}) },
 			party_line_listen_active: { ...(raw?.party_line_listen_active ?? {}) },
 			party_line_listen_level: { ...(raw?.party_line_listen_level ?? {}) },
@@ -660,8 +682,24 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.checkFeedbacks('user_connected', 'user_disconnected')
 	}
 
+	private handleMicState(message: MicStateMessage): void {
+		this.mic = {
+			device_id: message.device_id ?? null,
+			device_name: message.device_name ?? null,
+			holder_online: message.holder_online ?? false,
+			muted: message.muted ?? false,
+		}
+		this.micError = ''
+		this.pushVariableValues()
+		this.checkFeedbacks('mic_muted', 'mic_live')
+	}
+
 	private handleServerError(message: ErrorMessage): void {
 		this.log('warn', message.message)
+		if (message.code === 'no_mic_available') {
+			this.micError = message.message
+			this.pushVariableValues()
+		}
 	}
 
 	private applyKeys(keys: KeyConfig[]): void {
@@ -700,10 +738,6 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			if (!this.listenControlState.pressing.get(targetId)) {
 				this.listenControlState.latched.set(targetId, this.isLatched(key, 'listen'))
 			}
-		}
-
-		if (!this.globalPressing) {
-			this.globalLatched = this.state.global_active
 		}
 	}
 
@@ -906,42 +940,29 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					if (key) this.onListenLevelAdjustDb(key, deltaDb)
 				},
 			},
-			global_mode: {
-				name: 'Set global mode',
-				options: [
-					{
-						type: 'dropdown' as const,
-						id: 'mode',
-						label: 'Mode',
-						default: 'mute',
-						choices: globalModeChoices,
-					},
-				],
-				callback: async (action) => {
-					const mode = (action.options.mode as GlobalMode | undefined) ?? 'mute'
-					this.onGlobalModeSet(mode)
-				},
-			},
-			global_down: {
-				name: 'Global button down',
+			mic_mute: {
+				name: 'Mute microphone',
+				description: 'Mute the mic on whichever device holds it',
 				options: [],
 				callback: async () => {
-					this.onGlobalDown()
+					this.onSetMicMuted(true)
 				},
 			},
-			global_up: {
-				name: 'Global button up',
+			mic_unmute: {
+				name: 'Unmute microphone',
+				description:
+					'Unmute the mic. If the device holding it is gone, the server hands it to the device that held it most recently.',
 				options: [],
 				callback: async () => {
-					this.onGlobalUp()
+					this.onSetMicMuted(false)
 				},
 			},
-			global_set: {
-				name: 'Global set',
-				options: [this.getSetModeOption('mode')],
-				callback: async (action) => {
-					const mode = (action.options.mode as SetMode | undefined) ?? 'toggle'
-					this.onGlobalSet(mode)
+			mic_toggle: {
+				name: 'Toggle microphone mute',
+				description: 'Mute a live mic, or unmute a muted one',
+				options: [],
+				callback: async () => {
+					this.onMicToggle()
 				},
 			},
 		}
@@ -1089,15 +1110,27 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					return key ? !this.isKeyUserConnected(key) : false
 				},
 			},
-			global_active: {
+			mic_muted: {
 				type: 'boolean',
-				name: 'Global active',
+				name: 'Microphone muted',
+				description: 'On while the mic is muted, or while no device holds it',
 				defaultStyle: {
-					bgcolor: combineRgb(255, 255, 0),
-					color: combineRgb(0, 0, 0),
+					bgcolor: combineRgb(255, 0, 0),
+					color: combineRgb(255, 255, 255),
 				},
 				options: [],
-				callback: async () => this.state.global_active,
+				callback: async () => !this.isMicLive(),
+			},
+			mic_live: {
+				type: 'boolean',
+				name: 'Microphone live',
+				description: 'On while a device holds the mic and it is not muted',
+				defaultStyle: {
+					bgcolor: combineRgb(0, 160, 60),
+					color: combineRgb(255, 255, 255),
+				},
+				options: [],
+				callback: async () => this.isMicLive(),
 			},
 		}
 	}
@@ -1107,11 +1140,11 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		presets: CompanionPresetDefinitions<LiveMatrixManifest>
 	} {
 		const presets: CompanionPresetDefinitions<LiveMatrixManifest> = {
-			global_button: {
+			mic_button: {
 				type: 'simple',
-				name: 'Global button',
+				name: 'Microphone mute',
 				style: {
-					text: 'GLOBAL\n$(livematrix:global_mode)',
+					text: 'MIC\n$(livematrix:mic_device)',
 					size: 14,
 					color: combineRgb(255, 255, 255),
 					bgcolor: combineRgb(0, 0, 0),
@@ -1119,18 +1152,18 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				},
 				feedbacks: [
 					{
-						feedbackId: 'global_active',
+						feedbackId: 'mic_muted',
 						options: {},
 						style: {
-							bgcolor: combineRgb(255, 255, 0),
-							color: combineRgb(0, 0, 0),
+							bgcolor: combineRgb(255, 0, 0),
+							color: combineRgb(255, 255, 255),
 						},
 					},
 				],
 				steps: [
 					{
-						down: [{ actionId: 'global_down', options: {} }],
-						up: [{ actionId: 'global_up', options: {} }],
+						down: [{ actionId: 'mic_toggle', options: {} }],
+						up: [],
 					},
 				],
 			},
@@ -1139,12 +1172,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		presets['selected_volume_up'] = this.createSelectedVolumeStepPreset('up')
 		presets['selected_volume_down'] = this.createSelectedVolumeStepPreset('down')
 
-		const globalPresets = [
-			'global_button',
-			'selected_volume',
-			'selected_volume_up',
-			'selected_volume_down',
-		]
+		const generalPresets = ['mic_button', 'selected_volume', 'selected_volume_up', 'selected_volume_down']
 		const keyIndexPresets: string[] = []
 		const keyTargetPresets: string[] = []
 		const talkIndexPresets: string[] = []
@@ -1215,9 +1243,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				definitions: keyTargetPresets,
 			},
 			{
-				id: 'global',
-				name: 'Global',
-				definitions: globalPresets,
+				id: 'general',
+				name: 'Microphone and Selection',
+				definitions: generalPresets,
 			},
 			{
 				id: 'talk-index',
@@ -1876,8 +1904,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			user_id: { name: 'Logged-in user ID' },
 			display_name: { name: 'Logged-in display name' },
 			connected: { name: 'Connected' },
-			global_mode: { name: 'Global mode' },
-			global_active: { name: 'Global active' },
+			mic_muted: { name: 'Microphone muted (or held by no device)' },
+			mic_device: { name: 'Device holding the microphone' },
+			mic_holder_online: { name: 'Device holding the microphone is online' },
+			mic_error: { name: 'Last microphone error' },
 			key_count: { name: 'Key count' },
 			selected_key_index: { name: 'Selected key index' },
 			selected_key_name: { name: 'Selected key display name' },
@@ -1919,8 +1949,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			user_id: this.userId,
 			display_name: this.displayName,
 			connected: this.isSocketOpen(),
-			global_mode: this.state.global_mode,
-			global_active: this.state.global_active,
+			mic_muted: !this.isMicLive(),
+			mic_device: this.mic.device_name ?? this.mic.device_id ?? '',
+			mic_holder_online: this.mic.holder_online,
+			mic_error: this.micError,
 			key_count: this.keys.length,
 		}
 
@@ -2420,48 +2452,21 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.onListenLevelSetDb(key, nextLevelDb)
 	}
 
-	private onGlobalModeSet(mode: GlobalMode): void {
-		this.state.global_mode = mode
-		this.send({ type: 'set_global_mode', mode })
-		this.pushVariableValues()
+	private onSetMicMuted(muted: boolean): void {
+		this.send({ type: 'set_mic_muted', muted })
 	}
 
-	private onGlobalDown(): void {
-		this.globalPressStart = Date.now()
-		this.globalPressing = true
-		this.syncGlobalActive()
+	/**
+	 * Resolved here from the last mic state rather than sent as a toggle: the
+	 * server may replay a message, and a replayed toggle would undo itself.
+	 */
+	private onMicToggle(): void {
+		this.onSetMicMuted(this.isMicLive())
 	}
 
-	private onGlobalUp(): void {
-		const wasShortPress = this.globalPressStart !== undefined && Date.now() - this.globalPressStart < TAP_THRESHOLD_MS
-		this.globalPressing = false
-		if (wasShortPress) {
-			this.globalLatched = !this.globalLatched
-		}
-		this.syncGlobalActive()
-	}
-
-	private onGlobalSet(mode: SetMode): void {
-		this.globalPressing = false
-		switch (mode) {
-			case 'toggle':
-				this.globalLatched = !this.state.global_active
-				break
-			case 'on':
-				this.globalLatched = true
-				break
-			case 'off':
-				this.globalLatched = false
-				break
-		}
-		this.syncGlobalActive()
-	}
-
-	private syncGlobalActive(): void {
-		this.state.global_active = this.globalLatched || this.globalPressing
-		this.send({ type: 'set_global_active', active: this.state.global_active })
-		this.pushVariableValues()
-		this.checkFeedbacks('global_active')
+	/** Whether some device holds the mic and it is open. */
+	private isMicLive(): boolean {
+		return this.mic.device_id !== null && !this.mic.muted
 	}
 
 	private wasShortPress(controlState: KeyControlState, targetId: string): boolean {
@@ -2669,9 +2674,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.pressApplied.clear()
 		this.talkControlState = this.createControlState()
 		this.listenControlState = this.createControlState()
-		this.globalLatched = false
-		this.globalPressing = false
-		this.globalPressStart = undefined
+		this.mic = createEmptyMicState()
+		this.micError = ''
 	}
 }
 
