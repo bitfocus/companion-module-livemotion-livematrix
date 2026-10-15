@@ -351,7 +351,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 	private handleMicState(message: MicStateMessage): void {
 		this.mic = readMicState(message)
-		this.micError = ''
+		// The server answers every mute request with the mic state, right behind
+		// any error, so a state that still has no holder must not wipe the error
+		// it explains. One with a holder means the mic is back.
+		if (this.mic.device_id !== null) this.micError = ''
 		this.pushVariableValues()
 		this.checkFeedbacks('mic_muted', 'mic_live')
 	}
@@ -1217,6 +1220,11 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	}
 
 	private onSetMicMuted(muted: boolean): void {
+		// A fresh attempt: the server says again if it still cannot.
+		if (this.micError) {
+			this.micError = ''
+			this.pushVariableValues()
+		}
 		this.send({ type: 'set_mic_muted', muted })
 	}
 

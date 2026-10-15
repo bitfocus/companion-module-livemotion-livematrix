@@ -16,7 +16,7 @@ Microphone:
 - Each user has one microphone state on the server: the device holding the mic, and whether it is muted. Muting silences the user everywhere, whichever device or panel did it. Holding a talk key sends audio through a muted mic without unmuting it.
 - Actions `Mute microphone`, `Unmute microphone` and `Toggle microphone mute`. Toggle mutes a live mic and unmutes a muted one, or one no device holds. Unmuting when the holding device is gone hands the mic to the device that held it most recently.
 - Feedbacks `Microphone muted` (on while muted or while no device holds the mic, red by default) and `Microphone live` (on while audio is going out, including a talk key held through the mute).
-- Variables `mic_muted`, `mic_open` (audio is going out), `mic_device`, `mic_holder_online` and `mic_error` (why the last unmute could not find a device, cleared by the next mic state).
+- Variables `mic_muted`, `mic_open` (audio is going out), `mic_device`, `mic_holder_online` and `mic_error` (why the last unmute could not find a device, kept until a device holds the mic again or the next mute or unmute).
 - Preset `Microphone mute` in the `Microphone and Selection` section: shows `MIC` and the holding device, toggles on press, and turns red while muted.
 
 Keys can point at users, party lines, feeds (listen-only lines) and groups (talk-only).

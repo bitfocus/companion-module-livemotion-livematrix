@@ -183,13 +183,32 @@ for (const mode of ['server', 'client'] as const) {
 			expect(instance.values).toMatchObject({ mic_muted: true, mic_open: false })
 		})
 
-		it('shows no_mic_available until the next mic state', async () => {
-			expect(instance.values.mic_error).toBe('')
+		/** What the server sends for an unmute nobody can take: the error, then the unchanged state. */
+		async function refuseUnmute(): Promise<void> {
 			fake.push({ type: 'error', message: 'No device can take the mic', code: 'no_mic_available' })
-			await waitFor(() => instance.values.mic_error === 'No device can take the mic', 'mic_error to be set')
+			await pushMic({ device_id: null, device_name: null, holder_online: false, muted: true, open: false })
+		}
 
-			await pushMic({ muted: true })
+		it('keeps no_mic_available through the mic state the server sends behind it', async () => {
+			await pushMic({ device_id: null, device_name: null, holder_online: false, muted: true, open: false })
 			expect(instance.values.mic_error).toBe('')
+
+			await refuseUnmute()
+			expect(instance.values.mic_error).toBe('No device can take the mic')
+		})
+
+		it('clears no_mic_available once a device holds the mic', async () => {
+			await refuseUnmute()
+			await pushMic({ muted: false })
+			expect(instance.values.mic_error).toBe('')
+		})
+
+		it('clears no_mic_available when the mic is tried again', async () => {
+			await refuseUnmute()
+			await instance.runAction('mic_unmute')
+			expect(instance.values.mic_error).toBe('')
+			await waitFor(() => fake.sent('set_mic_muted').length > 0, 'the unmute')
+			expect(fake.sent('set_mic_muted').at(-1)).toMatchObject({ muted: false })
 		})
 	})
 }
