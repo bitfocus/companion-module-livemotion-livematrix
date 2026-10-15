@@ -1,161 +1,67 @@
 import {
-	ButtonGraphicsDecorationType,
 	InstanceBase,
 	InstanceStatus,
-	Regex,
 	combineRgb,
 	type CompanionActionDefinitions,
 	type CompanionFeedbackDefinitions,
 	type CompanionOptionValues,
-	type CompanionPresetDefinitions,
-	type CompanionPresetGroup,
-	type CompanionPresetSection,
-	type CompanionSimplePresetLocalVariable,
 	type CompanionVariableDefinitions,
 	type CompanionVariableValues,
-	type DropdownChoice,
-	type JsonValue,
 	type SomeCompanionConfigField,
 } from '@companion-module/base'
-import WebSocket, { type RawData } from 'ws'
+import {
+	buildWebSocketUrl,
+	getConfigFields,
+	validateConfig,
+	type LiveMatrixConfig,
+	type LiveMatrixManifest,
+	type LiveMatrixSecrets,
+} from './config.js'
+import { LiveMatrixConnection } from './connection.js'
+import { KeyStateStore } from './key-state.js'
+import {
+	MAX_LISTEN_LEVEL_DB,
+	MIN_LISTEN_LEVEL_DB,
+	clampListenLevelLinear,
+	dbToLinear,
+	formatListenLevelDb,
+	sanitizeName,
+} from './levels.js'
+import {
+	getKeySelectorOptions,
+	getPressBehaviourOption,
+	getSetModeOption,
+	readPressBehaviour,
+	readSetMode,
+	resolveKey,
+	type PressBehaviour,
+	type SetMode,
+} from './options.js'
+import { getPresetDefinitions } from './presets.js'
+import {
+	createEmptyMicState,
+	keyRef,
+	keyTargetToken,
+	readMicState,
+	type ErrorMessage,
+	type Hold,
+	type KeyConfig,
+	type KeyField,
+	type KeysChangedMessage,
+	type LoginFailureMessage,
+	type LoginSuccessMessage,
+	type Message,
+	type MicState,
+	type MicStateMessage,
+	type MomentaryHold,
+	type SessionEndedMessage,
+	type StateUpdateMessage,
+	type UserConnectedMessage,
+	type UserDisconnectedMessage,
+	type UserInfo,
+} from './protocol.js'
 
-type ConnectionMode = 'server' | 'client'
-type SetMode = 'toggle' | 'on' | 'off'
-type KeySelectionMode = 'index' | 'target' | 'selected'
-type PressBehaviour = 'auto' | 'momentary' | 'latch'
 type LatchMode = 'off' | 'momentary' | 'latched'
-type KeyField = 'talk' | 'listen'
-type Hold = 'latched' | 'momentary'
-
-interface MomentaryHold {
-	key: { target_type: string; target_id: string }
-	talk: boolean
-	listen: boolean
-}
-
-type Message = Record<string, unknown>
-
-interface KeyConfig {
-	id: string
-	target_type: string
-	target_id: string
-	display_name: string
-	can_listen: boolean
-	can_talk: boolean
-	allow_listen_latching: boolean
-	allow_talk_latching: boolean
-	default_listen_active?: boolean
-	default_talk_active?: boolean
-}
-
-interface UserInfo {
-	id: string
-	display_name: string
-	is_virtual: boolean
-	is_connected: boolean
-}
-
-interface UserState {
-	talk_active: Record<string, boolean>
-	listen_active: Record<string, boolean>
-	listen_level: Record<string, number>
-	party_line_talk_active: Record<string, boolean>
-	party_line_listen_active: Record<string, boolean>
-	party_line_listen_level: Record<string, number>
-}
-
-interface LoginSuccessMessage {
-	type: 'login_success'
-	user_id: string
-	display_name: string
-	device_id: string
-	keys: KeyConfig[]
-	available_users: UserInfo[]
-	/// How often a held key has to be restated, and how long it survives without that.
-	momentary_heartbeat_interval_ms?: number
-	momentary_timeout_ms?: number
-}
-
-interface StateUpdateMessage {
-	type: 'state_update'
-	/// What audio is actually doing: latched or held.
-	state: UserState
-	/// The same snapshot with every held press removed.
-	latched?: UserState
-}
-
-interface KeysChangedMessage {
-	type: 'keys_changed'
-	keys: KeyConfig[]
-}
-
-interface UserConnectedMessage {
-	type: 'user_connected'
-	user_id: string
-	display_name: string
-}
-
-interface UserDisconnectedMessage {
-	type: 'user_disconnected'
-	user_id: string
-}
-
-interface LoginFailureMessage {
-	type: 'login_failure'
-	reason: string
-}
-
-interface ErrorMessage {
-	type: 'error'
-	message: string
-	/** Machine-readable reason, when the server gives one. */
-	code?: string
-}
-
-/**
- * The user's one microphone, as the server sees it: which device holds it and
- * whether it is muted. Companion never holds the mic itself; it only mutes and
- * unmutes whichever device does.
- */
-interface MicState {
-	/** The device holding the mic, or null when nobody does. */
-	device_id: string | null
-	device_name: string | null
-	holder_online: boolean
-	muted: boolean
-}
-
-interface MicStateMessage {
-	type: 'mic_state'
-	device_id?: string | null
-	device_name?: string | null
-	holder_online?: boolean
-	muted?: boolean
-	is_mine?: boolean
-}
-
-type LiveMatrixConfig = {
-	connection_mode: ConnectionMode
-	host: string
-	port: number
-	username: string
-	server_tls: boolean
-	client_host: string
-	client_port: number
-	client_tls: boolean
-}
-
-type LiveMatrixSecrets = {
-	password?: string
-}
-
-type LiveMatrixManifest = {
-	config: LiveMatrixConfig
-	secrets: LiveMatrixSecrets
-	actions: Record<string, any>
-	feedbacks: Record<string, any>
-	variables: CompanionVariableValues
-}
 
 interface KeyControlState {
 	latched: Map<string, boolean>
@@ -188,41 +94,6 @@ const PRESS_SETTLE_MS = 120
 /** How long a listen key must be held before it takes the selection. */
 const LONG_PRESS_SELECT_MS = 500
 
-const TALK_ACCENT = combineRgb(255, 40, 40)
-const TALK_SHADOW = combineRgb(24, 0, 0)
-const LISTEN_ACCENT = combineRgb(0, 220, 90)
-const LISTEN_SHADOW = combineRgb(0, 20, 8)
-/**
- * Border colours are the accents softened. At rest the border only says what
- * the key is for; the saturated accent is reserved for the fill, which says
- * the key is live.
- */
-const TALK_BORDER = combineRgb(198, 104, 104)
-const LISTEN_BORDER = combineRgb(96, 176, 128)
-const BORDER_WIDTH = 2
-
-const KEY_LABEL_BOX_HEIGHT = 62
-
-/**
- * Text sizes, as a percentage of the button.
- *
- * Companion sizes text against the element holding it rather than against the
- * button, so the same number draws larger text in a taller box. Writing sizes
- * against the button and converting keeps text of one kind at one size
- * wherever it sits, whatever shape of box it lands in.
- */
-const TEXT_KEY_LABEL = 30
-const TEXT_KEY_NAME = 18
-const TEXT_LEVEL = 14
-const TEXT_ARROW = 18
-
-/**
- * How much of a key is left showing when nobody is logged in on the other end.
- * A key to somebody who is not there still exists and can still be latched, so
- * it is faded rather than hidden.
- */
-const OFFLINE_OPACITY = 35
-
 /**
  * What a key's name reads as when the button is not pointing at a key: the
  * index is out of range, or the target is one this login does not have. The
@@ -230,114 +101,43 @@ const OFFLINE_OPACITY = 35
  */
 const NO_KEY_NAME = 'N/A'
 
-/**
- * The local variable every key preset points at its key with. Held on the
- * button rather than repeated through each action and feedback, so one edit
- * moves the whole button to another key.
- */
-const KEY_LOCAL_VARIABLE = 'key'
-
-/**
- * Convert a size written against the button into the percentage of its own box
- * that Companion wants. Left unrounded: whole numbers here are off by enough to
- * see between boxes of different heights.
- */
-function fontsizeForBox(buttonPercent: number, boxHeight: number): number {
-	return (buttonPercent * 100) / boxHeight
-}
-/// Fallback until `login_success` tells us what the server actually wants.
+/** Fallback until `login_success` tells us what the server actually wants. */
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000
-const DEFAULT_SERVER_PORT = 55678
-const DEFAULT_CLIENT_PORT = 9100
-const MIN_LISTEN_LEVEL_DB = -100
-/** The quietest level worth showing on a meter; -100 dB is silence and wastes the scale. */
-const MIN_LISTEN_LEVEL_DB_DISPLAY = -40
-const MAX_LISTEN_LEVEL_DB = 10
-/** One detent of a rotary encoder. */
-const LEVEL_STEP_DB = 1
+/**
+ * How often an idle server connection says something. The server drops a
+ * socket it has not heard from in 150 seconds, so this leaves room for two
+ * lost pings before that happens.
+ */
+const SERVER_KEEPALIVE_INTERVAL_MS = 45_000
+const RECONNECT_DELAY_MS = 5000
 
-const keySelectChoices = [
-	{ id: 'target', label: 'Specific key' },
-	{ id: 'index', label: 'By index' },
-	{ id: 'selected', label: 'Selected key' },
-]
-
-const pressBehaviourChoices = [
-	{ id: 'auto', label: 'Follow key config (latch if allowed)' },
-	{ id: 'momentary', label: 'Momentary only' },
-	{ id: 'latch', label: 'Latch only (toggle on press)' },
-]
-
-const setModeChoices = [
-	{ id: 'toggle', label: 'Toggle' },
-	{ id: 'on', label: 'On' },
-	{ id: 'off', label: 'Off' },
-]
-
-function createEmptyState(): UserState {
+function createControlState(): KeyControlState {
 	return {
-		talk_active: {},
-		listen_active: {},
-		listen_level: {},
-		party_line_talk_active: {},
-		party_line_listen_active: {},
-		party_line_listen_level: {},
+		latched: new Map(),
+		pressing: new Map(),
+		pressStart: new Map(),
 	}
-}
-
-function createEmptyMicState(): MicState {
-	return {
-		device_id: null,
-		device_name: null,
-		holder_online: false,
-		muted: false,
-	}
-}
-
-function sanitizeName(name: string): string {
-	return (
-		name
-			.toLowerCase()
-			.replace(/[^a-z0-9]+/g, '_')
-			.replace(/^_+|_+$/g, '') || 'unnamed'
-	)
-}
-
-function clamp(value: number, min: number, max: number): number {
-	return Math.max(min, Math.min(max, value))
-}
-
-function linearToDb(level: number): number {
-	if (level <= 0) return MIN_LISTEN_LEVEL_DB
-	return 20 * Math.log10(level)
-}
-
-function dbToLinear(levelDb: number): number {
-	if (levelDb <= MIN_LISTEN_LEVEL_DB) return 0
-	return 10 ** (levelDb / 20)
 }
 
 export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	config!: LiveMatrixConfig
 	secrets!: LiveMatrixSecrets
-	private ws: WebSocket | null = null
-	private reconnectTimer: NodeJS.Timeout | undefined
-	private shouldReconnect = false
+	private connection: LiveMatrixConnection | undefined
 
 	private userId = ''
 	private displayName = ''
 	private keys: KeyConfig[] = []
 	private availableUsers: UserInfo[] = []
 	private connectedUsers = new Set<string>()
-	private state: UserState = createEmptyState()
-	/** The latched layer of the last state update, when the server sends one. */
-	private latchedState: UserState | undefined
+	private keyState = new KeyStateStore()
 	private mic: MicState = createEmptyMicState()
 	/** The last mic error the server reported, cleared by the next mic state. */
 	private micError = ''
+	/** Why the last login was refused, while we keep retrying it. */
+	private retryReason: string | undefined
 
-	private talkControlState: KeyControlState = this.createControlState()
-	private listenControlState: KeyControlState = this.createControlState()
+	private talkControlState: KeyControlState = createControlState()
+	private listenControlState: KeyControlState = createControlState()
 	private selectedKeyToken: string | undefined
 	/** When the last tap on a key ended, for spotting a double tap. */
 	private lastTapAt = new Map<string, number>()
@@ -362,20 +162,18 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	private heldKeys = new Map<string, MomentaryHold>()
 	private heartbeatTimer: NodeJS.Timeout | undefined
 	private heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS
+	/** Connection timing, overridable so tests need not wait out real delays. */
+	protected keepaliveIntervalMs = SERVER_KEEPALIVE_INTERVAL_MS
+	protected reconnectDelayMs = RECONNECT_DELAY_MS
 
 	async init(config: LiveMatrixConfig, _isFirstInit: boolean, secrets: LiveMatrixSecrets): Promise<void> {
 		this.config = config
 		this.secrets = secrets
 		this.setupDefinitions()
-		await this.connect()
+		this.connect()
 	}
 
 	async destroy(): Promise<void> {
-		this.shouldReconnect = false
-		if (this.reconnectTimer) {
-			clearTimeout(this.reconnectTimer)
-			this.reconnectTimer = undefined
-		}
 		this.clearHolds()
 		await this.disconnect()
 	}
@@ -383,222 +181,78 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	async configUpdated(config: LiveMatrixConfig, secrets: LiveMatrixSecrets): Promise<void> {
 		this.config = config
 		this.secrets = secrets
-		this.shouldReconnect = false
-		if (this.reconnectTimer) {
-			clearTimeout(this.reconnectTimer)
-			this.reconnectTimer = undefined
-		}
 		this.clearHolds()
 		await this.disconnect()
 		this.resetSession()
 		this.setupDefinitions()
-		await this.connect()
+		this.connect()
 	}
 
 	getConfigFields(): SomeCompanionConfigField[] {
-		return [
-			{
-				type: 'dropdown',
-				id: 'connection_mode',
-				label: 'Connection mode',
-				width: 6,
-				default: 'server',
-				choices: [
-					{ id: 'server', label: 'Direct to server' },
-					{ id: 'client', label: "Via a client's control API" },
-				],
-			},
-			{
-				type: 'textinput',
-				id: 'host',
-				label: 'Server host',
-				width: 6,
-				default: 'localhost',
-				regex: Regex.HOSTNAME,
-				isVisibleExpression: "$(options:connection_mode) == 'server'",
-			},
-			{
-				type: 'number',
-				id: 'port',
-				label: 'Server port',
-				width: 4,
-				default: DEFAULT_SERVER_PORT,
-				min: 1,
-				max: 65535,
-				isVisibleExpression: "$(options:connection_mode) == 'server'",
-			},
-			{
-				type: 'checkbox',
-				id: 'server_tls',
-				label: 'Use TLS',
-				width: 2,
-				default: false,
-				isVisibleExpression: "$(options:connection_mode) == 'server'",
-			},
-			{
-				type: 'textinput',
-				id: 'username',
-				label: 'Username',
-				width: 6,
-				default: '',
-				isVisibleExpression: "$(options:connection_mode) == 'server'",
-			},
-			{
-				type: 'secret-text',
-				id: 'password',
-				label: 'Password',
-				width: 6,
-				default: '',
-				isVisibleExpression: "$(options:connection_mode) == 'server'",
-			},
-			{
-				type: 'textinput',
-				id: 'client_host',
-				label: 'Control API host',
-				width: 6,
-				default: 'localhost',
-				regex: Regex.HOSTNAME,
-				isVisibleExpression: "$(options:connection_mode) == 'client'",
-			},
-			{
-				type: 'number',
-				id: 'client_port',
-				label: 'Control API port',
-				width: 4,
-				default: DEFAULT_CLIENT_PORT,
-				min: 1,
-				max: 65535,
-				isVisibleExpression: "$(options:connection_mode) == 'client'",
-			},
-			{
-				type: 'checkbox',
-				id: 'client_tls',
-				label: 'Use TLS',
-				width: 2,
-				default: false,
-				isVisibleExpression: "$(options:connection_mode) == 'client'",
-			},
-		]
+		return getConfigFields()
 	}
 
-	private createControlState(): KeyControlState {
-		return {
-			latched: new Map(),
-			pressing: new Map(),
-			pressStart: new Map(),
-		}
-	}
-
-	private async connect(): Promise<void> {
-		const validationError = this.validateConfig()
+	private connect(): void {
+		const validationError = validateConfig(this.config, this.secrets)
 		if (validationError) {
 			this.updateStatus(InstanceStatus.BadConfig, validationError)
 			return
 		}
 
+		const serverMode = this.config.connection_mode === 'server'
 		this.updateStatus(InstanceStatus.Connecting)
-		this.shouldReconnect = true
-		const url = this.buildWebSocketUrl()
-		const ws = new WebSocket(url)
-		this.ws = ws
-
-		ws.on('open', () => {
-			this.updateStatus(InstanceStatus.Connecting)
-			if (this.config.connection_mode === 'server') {
-				this.send({
-					type: 'login',
-					username: this.config.username,
-					password: this.secrets.password,
-				})
-			}
-		})
-
-		ws.on('message', (data: RawData) => {
-			void this.handleMessage(data.toString())
-		})
-
-		ws.on('error', (error: Error) => {
-			const message = error instanceof Error ? error.message : String(error)
-			this.log('error', `WebSocket error: ${message}`)
-			this.updateStatus(InstanceStatus.ConnectionFailure, message)
-		})
-
-		ws.on('close', () => {
-			if (this.ws === ws) {
-				this.ws = null
-			}
-			this.clearHolds()
-			if (this.shouldReconnect) {
-				this.updateStatus(InstanceStatus.Disconnected)
-				this.scheduleReconnect()
-			}
-		})
+		this.connection = new LiveMatrixConnection(
+			buildWebSocketUrl(this.config),
+			{
+				open: () => {
+					this.updateStatus(InstanceStatus.Connecting)
+					// The client app's control API is already logged in and sends its
+					// snapshot unasked; only the server wants to know who we are.
+					if (serverMode) this.sendLogin()
+				},
+				message: (message) => this.handleMessage(message),
+				close: (reconnecting) => {
+					this.clearHolds()
+					this.pushVariableValues()
+					if (!reconnecting) return
+					if (this.retryReason) this.updateStatus(InstanceStatus.ConnectionFailure, this.retryReason)
+					else this.updateStatus(InstanceStatus.Disconnected)
+				},
+				error: (message) => {
+					this.log('error', `WebSocket error: ${message}`)
+					this.updateStatus(InstanceStatus.ConnectionFailure, message)
+				},
+				warn: (message) => this.log('warn', message),
+			},
+			// The client app's control API neither times out an idle panel nor
+			// answers a ping, so only the server connection is kept alive.
+			{
+				keepaliveIntervalMs: serverMode ? this.keepaliveIntervalMs : 0,
+				reconnectDelayMs: this.reconnectDelayMs,
+			},
+		)
+		this.connection.start()
 	}
 
 	private async disconnect(): Promise<void> {
-		const ws = this.ws
-		this.ws = null
-		if (!ws) return
+		const connection = this.connection
+		this.connection = undefined
+		await connection?.stop()
+	}
 
-		await new Promise<void>((resolve) => {
-			const finalize = () => resolve()
-			ws.once('close', finalize)
-			try {
-				ws.close()
-			} catch {
-				resolve()
-			}
-			setTimeout(resolve, 500)
+	private sendLogin(): void {
+		this.send({
+			type: 'login',
+			username: this.config.username,
+			password: this.secrets.password,
+			// The same device on every reconnect, so the server re-admits this
+			// panel rather than counting a new device against the licence each time.
+			// One per Companion connection, so two of them never take each other's place.
+			device_id: `companion-${this.id}`,
 		})
 	}
 
-	private scheduleReconnect(): void {
-		if (this.reconnectTimer) return
-		this.reconnectTimer = setTimeout(() => {
-			this.reconnectTimer = undefined
-			void this.connect()
-		}, 5000)
-	}
-
-	private validateConfig(): string | undefined {
-		const host = this.config.host?.trim() ?? ''
-		const username = this.config.username?.trim() ?? ''
-		const password = this.secrets.password?.trim() ?? ''
-		const clientHost = this.config.client_host?.trim() ?? ''
-		if (this.config.connection_mode === 'server') {
-			if (!host) return 'Server host is required'
-			if (!username) return 'Username is required'
-			if (!password) return 'Password is required'
-		} else {
-			if (!clientHost) return 'Control API host is required'
-		}
-
-		return undefined
-	}
-
-	private buildWebSocketUrl(): string {
-		if (this.config.connection_mode === 'server') {
-			const scheme = this.config.server_tls ? 'wss' : 'ws'
-			const host = this.config.host?.trim() ?? 'localhost'
-			const port = this.config.port ?? DEFAULT_SERVER_PORT
-			return `${scheme}://${host}:${port}/ws`
-		}
-
-		const scheme = this.config.client_tls ? 'wss' : 'ws'
-		const clientHost = this.config.client_host?.trim() ?? 'localhost'
-		const clientPort = this.config.client_port ?? DEFAULT_CLIENT_PORT
-		return `${scheme}://${clientHost}:${clientPort}`
-	}
-
-	private async handleMessage(raw: string): Promise<void> {
-		let message: Message
-		try {
-			message = JSON.parse(raw) as Message
-		} catch (error) {
-			this.log('warn', `Ignoring invalid JSON message: ${String(error)}`)
-			return
-		}
-
+	private handleMessage(message: Message): void {
 		switch (message.type) {
 			case 'login_success':
 				this.handleLoginSuccess(message as unknown as LoginSuccessMessage)
@@ -606,17 +260,20 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			case 'login_failure':
 				this.handleLoginFailure(message as unknown as LoginFailureMessage)
 				break
+			case 'session_ended':
+				this.handleSessionEnded(message as unknown as SessionEndedMessage)
+				break
 			case 'state_update':
 				this.handleStateUpdate(message as unknown as StateUpdateMessage)
 				break
 			case 'keys_changed':
-				this.handleKeysChanged(message as unknown as KeysChangedMessage)
+				this.applyKeys((message as unknown as KeysChangedMessage).keys ?? [])
 				break
 			case 'user_connected':
-				this.handleUserConnected(message as unknown as UserConnectedMessage)
+				this.handleUserPresence((message as unknown as UserConnectedMessage).user_id, true)
 				break
 			case 'user_disconnected':
-				this.handleUserDisconnected(message as unknown as UserDisconnectedMessage)
+				this.handleUserPresence((message as unknown as UserDisconnectedMessage).user_id, false)
 				break
 			case 'mic_state':
 				this.handleMicState(message as unknown as MicStateMessage)
@@ -625,6 +282,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				this.handleServerError(message as unknown as ErrorMessage)
 				break
 			default:
+				// Including `pong`: any message at all is proof enough the link is up.
 				break
 		}
 	}
@@ -638,8 +296,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		// The server advertises its own lease so client and server cannot drift
 		// apart on how often a held key has to be restated.
 		this.heartbeatIntervalMs = message.momentary_heartbeat_interval_ms ?? DEFAULT_HEARTBEAT_INTERVAL_MS
+		this.retryReason = undefined
 		this.updateStatus(InstanceStatus.Ok)
 
+		// On the client's control API this would rename the app's own device.
 		if (this.config.connection_mode === 'server') {
 			this.send({
 				type: 'set_device_name',
@@ -649,62 +309,48 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		}
 	}
 
+	/**
+	 * Only a fatal failure is a wrong password. Anything else, such as a full
+	 * licence, clears up by itself, so the module keeps trying.
+	 */
 	private handleLoginFailure(message: LoginFailureMessage): void {
-		this.shouldReconnect = false
-		this.updateStatus(InstanceStatus.AuthenticationFailure, message.reason)
+		const reason = message.code ? `${message.reason} (${message.code})` : message.reason
+		if (message.fatal) {
+			this.connection?.stopReconnecting()
+			this.updateStatus(InstanceStatus.AuthenticationFailure, reason)
+			return
+		}
+		this.log('warn', `Login refused, retrying: ${reason}`)
+		this.retryReason = reason
+		this.updateStatus(InstanceStatus.ConnectionFailure, reason)
+		this.connection?.recycle()
+	}
+
+	/** Ended on purpose by the server; it stays ended until the config is saved again. */
+	private handleSessionEnded(message: SessionEndedMessage): void {
+		this.connection?.stopReconnecting()
+		this.updateStatus(InstanceStatus.Disconnected, message.message || message.reason)
 	}
 
 	private handleStateUpdate(message: StateUpdateMessage): void {
-		this.state = this.readUserState(message.state)
-		// The effective state alone cannot say whether a key is on because it is
-		// latched or because someone is leaning on it. The server tells us both.
-		this.latchedState = message.latched ? this.readUserState(message.latched) : undefined
-
+		this.keyState.apply(message)
 		this.syncLatchStateFromServer()
 		this.pushVariableValues()
 		this.checkAllFeedbacks()
 	}
 
-	private readUserState(raw: UserState | undefined): UserState {
-		return {
-			talk_active: { ...(raw?.talk_active ?? {}) },
-			listen_active: { ...(raw?.listen_active ?? {}) },
-			listen_level: { ...(raw?.listen_level ?? {}) },
-			party_line_talk_active: { ...(raw?.party_line_talk_active ?? {}) },
-			party_line_listen_active: { ...(raw?.party_line_listen_active ?? {}) },
-			party_line_listen_level: { ...(raw?.party_line_listen_level ?? {}) },
-		}
-	}
-
-	private handleKeysChanged(message: KeysChangedMessage): void {
-		this.applyKeys(message.keys ?? [])
-	}
-
-	private handleUserConnected(message: UserConnectedMessage): void {
-		this.connectedUsers.add(message.user_id)
+	private handleUserPresence(userId: string, connected: boolean): void {
+		if (connected) this.connectedUsers.add(userId)
+		else this.connectedUsers.delete(userId)
 		this.availableUsers = this.availableUsers.map((user) =>
-			user.id === message.user_id ? { ...user, is_connected: true } : user,
-		)
-		this.pushVariableValues()
-		this.checkFeedbacks('user_connected', 'user_disconnected')
-	}
-
-	private handleUserDisconnected(message: UserDisconnectedMessage): void {
-		this.connectedUsers.delete(message.user_id)
-		this.availableUsers = this.availableUsers.map((user) =>
-			user.id === message.user_id ? { ...user, is_connected: false } : user,
+			user.id === userId ? { ...user, is_connected: connected } : user,
 		)
 		this.pushVariableValues()
 		this.checkFeedbacks('user_connected', 'user_disconnected')
 	}
 
 	private handleMicState(message: MicStateMessage): void {
-		this.mic = {
-			device_id: message.device_id ?? null,
-			device_name: message.device_name ?? null,
-			holder_online: message.holder_online ?? false,
-			muted: message.muted ?? false,
-		}
+		this.mic = readMicState(message)
 		this.micError = ''
 		this.pushVariableValues()
 		this.checkFeedbacks('mic_muted', 'mic_live')
@@ -719,24 +365,18 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	}
 
 	private applyKeys(keys: KeyConfig[]): void {
-		const previousKeys = new Map(this.keys.map((key) => [key.target_id, key]))
+		const previousKeys = new Set(this.keys.map(keyTargetToken))
 		this.keys = keys
 
 		for (const key of keys) {
-			const targetId = key.target_id
-			const previousKey = previousKeys.get(targetId)
-			if (!previousKey) {
-				if (key.default_talk_active) {
-					this.stateTalkMapForKey(key)[targetId] = true
-					this.talkControlState.latched.set(targetId, true)
-				}
-				if (key.default_listen_active) {
-					this.stateListenMapForKey(key)[targetId] = true
-					this.listenControlState.latched.set(targetId, true)
-				}
+			if (previousKeys.has(keyTargetToken(key))) continue
+			if (key.default_talk_active) {
+				this.keyState.setActive(key, 'talk', true)
+				this.talkControlState.latched.set(key.target_id, true)
 			}
-			if (this.getListenLevel(key) === undefined) {
-				this.setListenLevelLocal(key, key.target_type === 'party_line' ? 1 : 1)
+			if (key.default_listen_active) {
+				this.keyState.setActive(key, 'listen', true)
+				this.listenControlState.latched.set(key.target_id, true)
 			}
 		}
 
@@ -749,39 +389,18 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		for (const key of this.keys) {
 			const targetId = key.target_id
 			if (!this.talkControlState.pressing.get(targetId)) {
-				this.talkControlState.latched.set(targetId, this.isLatched(key, 'talk'))
+				this.talkControlState.latched.set(targetId, this.keyState.isLatched(key, 'talk'))
 			}
 			if (!this.listenControlState.pressing.get(targetId)) {
-				this.listenControlState.latched.set(targetId, this.isLatched(key, 'listen'))
+				this.listenControlState.latched.set(targetId, this.keyState.isLatched(key, 'listen'))
 			}
 		}
-	}
-
-	/**
-	 * Whether the server holds this half latched on, as opposed to it merely
-	 * being held down by somebody. Falls back to the effective state on servers
-	 * that do not send the latched snapshot.
-	 */
-	private isLatched(key: KeyConfig, field: KeyField): boolean {
-		const snapshot = this.latchedState
-		if (!snapshot) {
-			return field === 'talk' ? this.getTalkActive(key) : this.getListenActive(key)
-		}
-		const map =
-			field === 'talk'
-				? key.target_type === 'party_line'
-					? snapshot.party_line_talk_active
-					: snapshot.talk_active
-				: key.target_type === 'party_line'
-					? snapshot.party_line_listen_active
-					: snapshot.listen_active
-		return map[key.target_id] ?? false
 	}
 
 	private setupDefinitions(): void {
 		this.setActionDefinitions(this.getActionDefinitions())
 		this.setFeedbackDefinitions(this.getFeedbackDefinitions())
-		const { structure, presets } = this.getPresetDefinitions()
+		const { structure, presets } = getPresetDefinitions(this.keys)
 		this.setPresetDefinitions(structure, presets)
 		this.setVariableDefinitions(this.getVariableDefinitions())
 		this.pushVariableValues()
@@ -792,7 +411,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			select_key: {
 				name: 'Select key',
 				description: 'Make this the key that "selected key" actions and feedbacks act on',
-				options: this.getKeySelectorOptions(),
+				options: getKeySelectorOptions(this.keys),
 				callback: async (action) => {
 					const key = this.resolveKey(action.options)
 					if (key) this.selectKey(key)
@@ -801,8 +420,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			talk_down: {
 				name: 'Talk key down',
 				options: [
-					...this.getKeySelectorOptions(),
-					this.getPressBehaviourOption(),
+					...getKeySelectorOptions(this.keys),
+					getPressBehaviourOption(),
 					{
 						type: 'checkbox' as const,
 						id: 'also_select',
@@ -814,14 +433,14 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					const key = this.resolveKey(action.options)
 					if (!key) return
 					if (action.options.also_select !== false) this.selectKey(key)
-					this.onTalkDown(key, this.readPressBehaviour(action.options))
+					this.onTalkDown(key, readPressBehaviour(action.options))
 				},
 			},
 			talk_up: {
 				name: 'Talk key up',
 				options: [
-					...this.getKeySelectorOptions(),
-					this.getPressBehaviourOption(),
+					...getKeySelectorOptions(this.keys),
+					getPressBehaviourOption(),
 					{
 						type: 'checkbox' as const,
 						id: 'double_tap_listen',
@@ -834,27 +453,23 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				callback: async (action) => {
 					const key = this.resolveKey(action.options)
 					if (!key) return
-					this.onTalkUp(
-						key,
-						this.readPressBehaviour(action.options),
-						action.options.double_tap_listen !== false,
-					)
+					this.onTalkUp(key, readPressBehaviour(action.options), action.options.double_tap_listen !== false)
 				},
 			},
 			talk_set: {
 				name: 'Talk set',
-				options: [...this.getKeySelectorOptions(), this.getSetModeOption('mode')],
+				options: [...getKeySelectorOptions(this.keys), getSetModeOption('mode')],
 				callback: async (action) => {
 					const key = this.resolveKey(action.options)
-					const mode = (action.options.mode as SetMode | undefined) ?? 'toggle'
+					const mode = readSetMode(action.options)
 					if (key) this.onSetKeyMode(key, 'talk', mode)
 				},
 			},
 			listen_down: {
 				name: 'Listen key down',
 				options: [
-					...this.getKeySelectorOptions(),
-					this.getPressBehaviourOption(),
+					...getKeySelectorOptions(this.keys),
+					getPressBehaviourOption(),
 					{
 						type: 'checkbox' as const,
 						id: 'also_select',
@@ -874,18 +489,14 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					const key = this.resolveKey(action.options)
 					if (!key) return
 					if (action.options.also_select !== false) this.selectKey(key)
-					this.onListenDown(
-						key,
-						this.readPressBehaviour(action.options),
-						action.options.long_press_selects === true,
-					)
+					this.onListenDown(key, readPressBehaviour(action.options), action.options.long_press_selects === true)
 				},
 			},
 			listen_up: {
 				name: 'Listen key up',
 				options: [
-					...this.getKeySelectorOptions(),
-					this.getPressBehaviourOption(),
+					...getKeySelectorOptions(this.keys),
+					getPressBehaviourOption(),
 					{
 						type: 'checkbox' as const,
 						id: 'long_press_selects',
@@ -897,27 +508,22 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				],
 				callback: async (action) => {
 					const key = this.resolveKey(action.options)
-					if (key)
-						this.onListenUp(
-							key,
-							this.readPressBehaviour(action.options),
-							action.options.long_press_selects === true,
-						)
+					if (key) this.onListenUp(key, readPressBehaviour(action.options), action.options.long_press_selects === true)
 				},
 			},
 			listen_set: {
 				name: 'Listen set',
-				options: [...this.getKeySelectorOptions(), this.getSetModeOption('mode')],
+				options: [...getKeySelectorOptions(this.keys), getSetModeOption('mode')],
 				callback: async (action) => {
 					const key = this.resolveKey(action.options)
-					const mode = (action.options.mode as SetMode | undefined) ?? 'toggle'
+					const mode = readSetMode(action.options)
 					if (key) this.onSetKeyMode(key, 'listen', mode)
 				},
 			},
 			listen_level: {
 				name: 'Set listen level',
 				options: [
-					...this.getKeySelectorOptions(),
+					...getKeySelectorOptions(this.keys),
 					{
 						type: 'number' as const,
 						id: 'level',
@@ -938,7 +544,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			listen_level_delta: {
 				name: 'Change listen level by dB',
 				options: [
-					...this.getKeySelectorOptions(),
+					...getKeySelectorOptions(this.keys),
 					{
 						type: 'number' as const,
 						id: 'delta_db',
@@ -993,10 +599,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					bgcolor: combineRgb(255, 0, 0),
 					color: combineRgb(255, 255, 255),
 				},
-				options: this.getKeySelectorOptions(),
+				options: getKeySelectorOptions(this.keys),
 				callback: async (feedback) => {
 					const key = this.resolveKey(feedback.options)
-					return key ? this.getTalkActive(key) : false
+					return key ? this.keyState.talk(key) : false
 				},
 			},
 			listen_active: {
@@ -1006,10 +612,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					bgcolor: combineRgb(0, 180, 0),
 					color: combineRgb(255, 255, 255),
 				},
-				options: this.getKeySelectorOptions(),
+				options: getKeySelectorOptions(this.keys),
 				callback: async (feedback) => {
 					const key = this.resolveKey(feedback.options)
-					return key ? this.getListenActive(key) : false
+					return key ? this.keyState.listen(key) : false
 				},
 			},
 			talk_latched: {
@@ -1020,7 +626,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					bgcolor: combineRgb(255, 0, 0),
 					color: combineRgb(255, 255, 255),
 				},
-				options: this.getKeySelectorOptions(),
+				options: getKeySelectorOptions(this.keys),
 				callback: async (feedback) => {
 					const key = this.resolveKey(feedback.options)
 					return key ? this.getLatchMode(key, 'talk') === 'latched' : false
@@ -1034,7 +640,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					bgcolor: combineRgb(160, 0, 0),
 					color: combineRgb(255, 255, 255),
 				},
-				options: this.getKeySelectorOptions(),
+				options: getKeySelectorOptions(this.keys),
 				callback: async (feedback) => {
 					const key = this.resolveKey(feedback.options)
 					return key ? this.getLatchMode(key, 'talk') === 'momentary' : false
@@ -1048,7 +654,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					bgcolor: combineRgb(0, 180, 0),
 					color: combineRgb(255, 255, 255),
 				},
-				options: this.getKeySelectorOptions(),
+				options: getKeySelectorOptions(this.keys),
 				callback: async (feedback) => {
 					const key = this.resolveKey(feedback.options)
 					return key ? this.getLatchMode(key, 'listen') === 'latched' : false
@@ -1062,7 +668,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					bgcolor: combineRgb(0, 120, 0),
 					color: combineRgb(255, 255, 255),
 				},
-				options: this.getKeySelectorOptions(),
+				options: getKeySelectorOptions(this.keys),
 				callback: async (feedback) => {
 					const key = this.resolveKey(feedback.options)
 					return key ? this.getLatchMode(key, 'listen') === 'momentary' : false
@@ -1074,29 +680,29 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				defaultStyle: {
 					color: combineRgb(255, 255, 255),
 				},
-				options: this.getKeySelectorOptions(),
+				options: getKeySelectorOptions(this.keys),
 				callback: async (feedback) => {
 					const key = this.resolveKey(feedback.options)
 					if (!key) return false
-					return this.keyTargetToken(key) === this.selectedKeyToken
+					return keyTargetToken(key) === this.selectedKeyToken
 				},
 			},
 			key_listen_level_db: {
 				type: 'value',
 				name: 'Listen level (dB)',
 				description: 'The listen level as a number, for driving a gauge or text',
-				options: this.getKeySelectorOptions(),
+				options: getKeySelectorOptions(this.keys),
 				callback: async (feedback) => {
 					const key = this.resolveKey(feedback.options)
 					if (!key) return MIN_LISTEN_LEVEL_DB
-					return Number(this.getListenLevelDb(key).toFixed(1))
+					return Number(this.keyState.levelDb(key).toFixed(1))
 				},
 			},
 			key_name: {
 				type: 'value',
 				name: 'Key display name',
 				description: 'The name of the key, for use as button text',
-				options: this.getKeySelectorOptions(),
+				options: getKeySelectorOptions(this.keys),
 				callback: async (feedback) => {
 					const key = this.resolveKey(feedback.options)
 					return key ? key.display_name : NO_KEY_NAME
@@ -1108,7 +714,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				defaultStyle: {
 					color: combineRgb(255, 255, 255),
 				},
-				options: this.getKeySelectorOptions(),
+				options: getKeySelectorOptions(this.keys),
 				callback: async (feedback) => {
 					const key = this.resolveKey(feedback.options)
 					return key ? this.isKeyUserConnected(key) : false
@@ -1120,7 +726,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				defaultStyle: {
 					color: combineRgb(128, 128, 128),
 				},
-				options: this.getKeySelectorOptions(),
+				options: getKeySelectorOptions(this.keys),
 				callback: async (feedback) => {
 					const key = this.resolveKey(feedback.options)
 					return key ? !this.isKeyUserConnected(key) : false
@@ -1135,767 +741,19 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					color: combineRgb(255, 255, 255),
 				},
 				options: [],
-				callback: async () => !this.isMicLive(),
+				callback: async () => !this.isMicUnmuted(),
 			},
 			mic_live: {
 				type: 'boolean',
 				name: 'Microphone live',
-				description: 'On while a device holds the mic and it is not muted',
+				description: 'On while audio is going out: the mic is unmuted, or muted with a talk key held through the mute',
 				defaultStyle: {
 					bgcolor: combineRgb(0, 160, 60),
 					color: combineRgb(255, 255, 255),
 				},
 				options: [],
-				callback: async () => this.isMicLive(),
+				callback: async () => this.isMicOpen(),
 			},
-		}
-	}
-
-	private getPresetDefinitions(): {
-		structure: CompanionPresetSection<LiveMatrixManifest>[]
-		presets: CompanionPresetDefinitions<LiveMatrixManifest>
-	} {
-		const presets: CompanionPresetDefinitions<LiveMatrixManifest> = {
-			mic_button: {
-				type: 'simple',
-				name: 'Microphone mute',
-				style: {
-					text: 'MIC\n$(livematrix:mic_device)',
-					size: 14,
-					color: combineRgb(255, 255, 255),
-					bgcolor: combineRgb(0, 0, 0),
-					alignment: 'center:center' as const,
-				},
-				feedbacks: [
-					{
-						feedbackId: 'mic_muted',
-						options: {},
-						style: {
-							bgcolor: combineRgb(255, 0, 0),
-							color: combineRgb(255, 255, 255),
-						},
-					},
-				],
-				steps: [
-					{
-						down: [{ actionId: 'mic_toggle', options: {} }],
-						up: [],
-					},
-				],
-			},
-		}
-		presets['selected_volume'] = this.createSelectedVolumePreset()
-		presets['selected_volume_up'] = this.createSelectedVolumeStepPreset('up')
-		presets['selected_volume_down'] = this.createSelectedVolumeStepPreset('down')
-
-		// One definition per kind of key rather than one per key: the key itself is a
-		// local variable, and the template groups below stamp a value into it for each
-		// key the login has. Skipped entirely when there are no keys, as Companion
-		// warns about definitions no group refers to.
-		if (this.keys.length > 0) {
-			presets['key_by_target'] = this.createLayeredKeyPreset('Intercom key', 'target')
-			presets['key_by_index'] = this.createLayeredKeyPreset('Intercom key (by index)', 'index')
-			presets['talk_by_target'] = this.createSideKeyPreset('talk', 'Talk key', 'target')
-			presets['talk_by_index'] = this.createSideKeyPreset('talk', 'Talk key (by index)', 'index')
-			presets['listen_by_target'] = this.createSideKeyPreset('listen', 'Listen key', 'target')
-			presets['listen_by_index'] = this.createSideKeyPreset('listen', 'Listen key (by index)', 'index')
-		}
-
-		const structure: CompanionPresetSection<LiveMatrixManifest>[] = [
-			{
-				id: 'keys',
-				name: 'Intercom Keys',
-				description: 'Talk and listen on one button. The `key` variable picks which key it drives.',
-				definitions: this.keyPresetGroups('keys', 'key_by_target', 'key_by_index'),
-			},
-			{
-				id: 'talk',
-				name: 'Talk Keys',
-				definitions: this.keyPresetGroups('talk', 'talk_by_target', 'talk_by_index'),
-			},
-			{
-				id: 'listen',
-				name: 'Listen Keys',
-				definitions: this.keyPresetGroups('listen', 'listen_by_target', 'listen_by_index'),
-			},
-			{
-				id: 'general',
-				name: 'Microphone and Selection',
-				definitions: ['mic_button', 'selected_volume', 'selected_volume_up', 'selected_volume_down'],
-			},
-		]
-
-		return { structure, presets }
-	}
-
-	/**
-	 * The two ways of pointing one key preset at a key: by name, which survives the
-	 * keys being reordered, and by index, which survives them being renamed. Each is
-	 * a template over the preset's `key` local variable, so the list of keys costs one
-	 * preset rather than one per key.
-	 */
-	private keyPresetGroups(
-		idPrefix: string,
-		targetPresetId: string,
-		indexPresetId: string,
-	): CompanionPresetGroup<LiveMatrixManifest>[] {
-		if (this.keys.length === 0) return []
-
-		return [
-			{
-				type: 'template',
-				id: `${idPrefix}-target`,
-				name: 'By key',
-				presetId: targetPresetId,
-				templateVariableName: KEY_LOCAL_VARIABLE,
-				templateValues: this.keys.map((key) => ({
-					name: key.display_name,
-					value: this.keyTargetToken(key),
-				})),
-			},
-			{
-				type: 'template',
-				id: `${idPrefix}-index`,
-				name: 'By index',
-				description: 'Follows whatever key is in that position, whichever key that turns out to be.',
-				presetId: indexPresetId,
-				templateVariableName: KEY_LOCAL_VARIABLE,
-				templateValues: this.keys.map((key, index) => ({
-					name: `${index}: ${key.display_name}`,
-					value: index,
-				})),
-			},
-		]
-	}
-
-	/** Wrap a Companion expression so it is evaluated per button rather than taken literally. */
-	private expr<T>(expression: string) {
-		return { isExpression: true as const, value: expression } as unknown as T
-	}
-
-	/**
-	 * Wrap a literal for a feedback style override. Companion drops overrides whose value
-	 * is not in expression-or-value form, which silently disables the whole feedback.
-	 */
-	private overrideValue<T extends JsonValue>(value: T) {
-		return { isExpression: false as const, value }
-	}
-
-	/**
-	 * An intercom key drawn as two gradient halves: listen fills the left half green,
-	 * talk fills the right half red. Both fade to near-black towards the middle so the
-	 * label stays readable, and read as a saturated edge at the outside.
-	 * A bar along the bottom shows the listen level.
-	 */
-	/**
-	 * Half of the frame around a combined key, in that half's colour. Drawn as
-	 * three segments rather than a box so the two halves meet without a seam up
-	 * the middle of the key.
-	 */
-	private halfBorderElements(side: 'left' | 'right') {
-		const left = side === 'left'
-		const color = left ? LISTEN_BORDER : TALK_BORDER
-		const x0 = left ? 0 : 50
-		const x1 = left ? 50 : 100
-		const edge = left ? 0 : 100
-		const common = {
-			borderWidth: BORDER_WIDTH,
-			borderColor: color,
-			borderPosition: 'inside' as const,
-		}
-
-		return [
-			{ id: `${side}-border-top`, type: 'line' as const, name: `${side} top`, fromX: x0, fromY: 0, toX: x1, toY: 0, ...common },
-			{ id: `${side}-border-side`, type: 'line' as const, name: `${side} edge`, fromX: edge, fromY: 0, toX: edge, toY: 100, ...common },
-			{ id: `${side}-border-bottom`, type: 'line' as const, name: `${side} bottom`, fromX: x0, fromY: 100, toX: x1, toY: 100, ...common },
-		]
-	}
-
-	/** The listen level, drawn as a rail along the bottom of a key. */
-	private levelBarElement() {
-		return {
-			id: 'level-bar',
-			type: 'gauge' as const,
-			name: 'Listen level',
-			x: 8,
-			y: 84,
-			width: 84,
-			height: 8,
-			orientation: 'horizontal' as const,
-			value: this.expr<number>('$(local:level)'),
-			min: MIN_LISTEN_LEVEL_DB_DISPLAY,
-			max: MAX_LISTEN_LEVEL_DB,
-			fillEnabled: true,
-			roundedEnds: true,
-			trackStyle: 'dimmed' as const,
-			// How much colour the unfilled rail keeps; low so the fill reads as a level.
-			trackAmount: 18,
-			multiColour: true,
-			stops: [
-				{ value: MIN_LISTEN_LEVEL_DB_DISPLAY, color: combineRgb(70, 130, 180), gradient: true },
-				{ value: 0, color: combineRgb(200, 225, 255), gradient: true },
-				{ value: MAX_LISTEN_LEVEL_DB, color: combineRgb(255, 190, 60), gradient: false },
-			],
-		}
-	}
-
-	/**
-	 * Selection is shown as a frame around the level rail rather than around the
-	 * whole key: the selection only decides which key the volume controls act on,
-	 * so it belongs next to the level rather than over the talk and listen state.
-	 */
-	private selectedBarBorderElement() {
-		return {
-			id: 'level-border',
-			type: 'box' as const,
-			name: 'Selected',
-			x: 4,
-			y: 80,
-			width: 92,
-			height: 16,
-			// Transparent fill: opacity would fade the border away with it.
-			color: combineRgb(0, 0, 0, 0),
-			borderWidth: 2,
-			borderColor: combineRgb(255, 255, 255),
-			borderPosition: 'inside' as const,
-			enabled: false,
-		}
-	}
-
-	/**
-	 * A key for one half of an intercom key. It carries its colour as a border at
-	 * rest and fills with it when active, brightest at the edges and darkest
-	 * through the middle so the name stays readable either way.
-	 */
-	private createSideKeyPreset(mode: KeyField, name: string, selection: 'index' | 'target') {
-		const keyOptions = this.presetKeyOptions(selection)
-		const talk = mode === 'talk'
-		const accent = talk ? TALK_ACCENT : LISTEN_ACCENT
-		const shadow = talk ? TALK_SHADOW : LISTEN_SHADOW
-		const showLevel = !talk
-		const labelBoxHeight = showLevel ? KEY_LABEL_BOX_HEIGHT : 88
-
-		return {
-			type: 'layered' as const,
-			name,
-			canvas: { decoration: ButtonGraphicsDecorationType.FollowDefault },
-			elements: [
-				{
-					id: 'fill',
-					type: 'gauge' as const,
-					name: `${talk ? 'Talk' : 'Listen'} fill`,
-					x: 0,
-					y: 0,
-					width: 100,
-					height: 100,
-					orientation: 'horizontal' as const,
-					value: 100,
-					min: 0,
-					max: 100,
-					fillEnabled: true,
-					multiColour: true,
-					trackStyle: 'transparent' as const,
-					trackAmount: 0,
-					enabled: false,
-					stops: [
-						{ value: 0, color: accent, gradient: true },
-						{ value: 50, color: shadow, gradient: true },
-						{ value: 100, color: accent, gradient: true },
-					],
-				},
-				{
-					id: 'border',
-					type: 'box' as const,
-					name: 'Key colour',
-					x: 0,
-					y: 0,
-					width: 100,
-					height: 100,
-					color: combineRgb(0, 0, 0, 0),
-					borderWidth: BORDER_WIDTH,
-					borderColor: talk ? TALK_BORDER : LISTEN_BORDER,
-					borderPosition: 'inside' as const,
-				},
-				{
-					id: 'label',
-					type: 'text' as const,
-					name: 'Key name',
-					x: 6,
-					y: showLevel ? 12 : 6,
-					width: 88,
-					height: labelBoxHeight,
-					text: this.expr<string>('$(local:name)'),
-					fontsize: fontsizeForBox(TEXT_KEY_LABEL, labelBoxHeight),
-					fontsizeAllowShrink: true,
-					weight: 'bold' as const,
-					color: combineRgb(255, 255, 255),
-					halign: 'center' as const,
-					valign: 'center' as const,
-				},
-				...(showLevel ? [this.levelBarElement(), this.selectedBarBorderElement()] : []),
-			],
-			localVariables: [
-				this.keyLocalVariable(selection),
-				{
-					variableName: 'name',
-					variableType: 'feedback' as const,
-					feedbackId: 'key_name' as const,
-					options: keyOptions,
-				},
-				...(showLevel
-					? [
-							{
-								variableName: 'level',
-								variableType: 'feedback' as const,
-								feedbackId: 'key_listen_level_db' as const,
-								options: keyOptions,
-							},
-						]
-					: []),
-			],
-			feedbacks: [
-				{
-					feedbackId: (talk ? 'talk_active' : 'listen_active') as 'talk_active' | 'listen_active',
-					options: keyOptions,
-					styleOverrides: [
-						{ elementId: 'fill', elementProperty: 'enabled', override: this.overrideValue(true) },
-					],
-				},
-				...(showLevel
-					? [
-							{
-								feedbackId: 'key_selected' as const,
-								options: keyOptions,
-								styleOverrides: [
-									{
-										elementId: 'level-border',
-										elementProperty: 'enabled',
-										override: this.overrideValue(true),
-									},
-								],
-							},
-						]
-					: []),
-				{
-					feedbackId: 'user_disconnected' as const,
-					options: keyOptions,
-					styleOverrides: [
-						{ elementId: 'label', elementProperty: 'opacity', override: this.overrideValue(OFFLINE_OPACITY) },
-						{ elementId: 'border', elementProperty: 'opacity', override: this.overrideValue(OFFLINE_OPACITY) },
-					],
-				},
-			],
-			steps: [
-				{
-					down: [
-						{
-							actionId: (talk ? 'talk_down' : 'listen_down') as 'talk_down' | 'listen_down',
-							options: talk
-								? { ...keyOptions, press_behaviour: 'auto', also_select: true }
-								: {
-										...keyOptions,
-										press_behaviour: 'auto',
-										also_select: false,
-										long_press_selects: true,
-									},
-						},
-					],
-					up: [
-						{
-							actionId: (talk ? 'talk_up' : 'listen_up') as 'talk_up' | 'listen_up',
-							options: talk
-								? { ...keyOptions, press_behaviour: 'auto', double_tap_listen: false }
-								: { ...keyOptions, press_behaviour: 'auto', long_press_selects: true },
-						},
-					],
-				},
-			],
-		}
-	}
-
-	private createLayeredKeyPreset(name: string, selection: 'index' | 'target') {
-		const keyOptions = this.presetKeyOptions(selection)
-
-		return {
-			type: 'layered' as const,
-			name,
-			canvas: { decoration: ButtonGraphicsDecorationType.FollowDefault },
-			elements: [
-				{
-					id: 'listen-fill',
-					type: 'gauge' as const,
-					name: 'Listen fill',
-					x: 0,
-					y: 0,
-					width: 50,
-					height: 100,
-					orientation: 'horizontal' as const,
-					value: 100,
-					min: 0,
-					max: 100,
-					fillEnabled: true,
-					multiColour: true,
-					trackStyle: 'transparent' as const,
-					trackAmount: 0,
-					enabled: false,
-					stops: [
-						{ value: 0, color: combineRgb(0, 220, 90), gradient: true },
-						{ value: 100, color: combineRgb(0, 20, 8), gradient: true },
-					],
-				},
-				{
-					id: 'talk-fill',
-					type: 'gauge' as const,
-					name: 'Talk fill',
-					x: 50,
-					y: 0,
-					width: 50,
-					height: 100,
-					orientation: 'horizontal' as const,
-					value: 100,
-					min: 0,
-					max: 100,
-					fillEnabled: true,
-					multiColour: true,
-					trackStyle: 'transparent' as const,
-					trackAmount: 0,
-					enabled: false,
-					stops: [
-						{ value: 0, color: combineRgb(24, 0, 0), gradient: true },
-						{ value: 100, color: combineRgb(255, 40, 40), gradient: true },
-					],
-				},
-				{
-					id: 'listen-latched-bar',
-					type: 'box' as const,
-					name: 'Listen latched',
-					x: 0,
-					y: 0,
-					width: 50,
-					height: 7,
-					color: combineRgb(0, 220, 90),
-					enabled: false,
-				},
-				{
-					id: 'talk-latched-bar',
-					type: 'box' as const,
-					name: 'Talk latched',
-					x: 50,
-					y: 0,
-					width: 50,
-					height: 7,
-					color: combineRgb(255, 40, 40),
-					enabled: false,
-				},
-				{
-					id: 'label',
-					type: 'text' as const,
-					name: 'Key name',
-					x: 4,
-					y: 12,
-					width: 92,
-					height: KEY_LABEL_BOX_HEIGHT,
-					text: this.expr<string>('$(local:name)'),
-					fontsize: fontsizeForBox(TEXT_KEY_LABEL, KEY_LABEL_BOX_HEIGHT),
-					fontsizeAllowShrink: true,
-					weight: 'bold' as const,
-					color: combineRgb(255, 255, 255),
-					halign: 'center' as const,
-					valign: 'center' as const,
-				},
-				...this.halfBorderElements('left'),
-				...this.halfBorderElements('right'),
-				this.levelBarElement(),
-				this.selectedBarBorderElement(),
-			],
-			localVariables: [
-				this.keyLocalVariable(selection),
-				{
-					variableName: 'name',
-					variableType: 'feedback' as const,
-					feedbackId: 'key_name' as const,
-					options: keyOptions,
-				},
-				{
-					variableName: 'level',
-					variableType: 'feedback' as const,
-					feedbackId: 'key_listen_level_db' as const,
-					options: keyOptions,
-				},
-			],
-			feedbacks: [
-				{
-					feedbackId: 'listen_active' as const,
-					options: keyOptions,
-					styleOverrides: [{ elementId: 'listen-fill', elementProperty: 'enabled', override: this.overrideValue(true) }],
-				},
-				{
-					feedbackId: 'talk_active' as const,
-					options: keyOptions,
-					styleOverrides: [{ elementId: 'talk-fill', elementProperty: 'enabled', override: this.overrideValue(true) }],
-				},
-				{
-					feedbackId: 'listen_latched' as const,
-					options: keyOptions,
-					styleOverrides: [{ elementId: 'listen-latched-bar', elementProperty: 'enabled', override: this.overrideValue(true) }],
-				},
-				{
-					feedbackId: 'talk_latched' as const,
-					options: keyOptions,
-					styleOverrides: [{ elementId: 'talk-latched-bar', elementProperty: 'enabled', override: this.overrideValue(true) }],
-				},
-				{
-					feedbackId: 'key_selected' as const,
-					options: keyOptions,
-					styleOverrides: [{ elementId: 'level-border', elementProperty: 'enabled', override: this.overrideValue(true) }],
-				},
-				{
-					feedbackId: 'user_disconnected' as const,
-					options: keyOptions,
-					styleOverrides: [
-						{ elementId: 'label', elementProperty: 'opacity', override: this.overrideValue(OFFLINE_OPACITY) },
-					],
-				},
-			],
-			steps: [
-				{
-					down: [{ actionId: 'talk_down' as const, options: { ...keyOptions, press_behaviour: 'auto', also_select: true } }],
-					up: [
-						{
-							actionId: 'talk_up' as const,
-							options: { ...keyOptions, press_behaviour: 'auto', double_tap_listen: true },
-						},
-					],
-					rotate_left: [
-						{ actionId: 'listen_level_delta' as const, options: { ...keyOptions, delta_db: -LEVEL_STEP_DB } },
-					],
-					rotate_right: [
-						{ actionId: 'listen_level_delta' as const, options: { ...keyOptions, delta_db: LEVEL_STEP_DB } },
-					],
-				},
-			],
-		}
-	}
-
-	/**
-	 * A rotary control for whichever key is currently selected: turn to trim the level,
-	 * press to return it to unity.
-	 */
-	/**
-	 * A plain up or down key for the selected key's level, for surfaces with no
-	 * encoder. Holding it repeats, so a long trim does not mean twenty presses.
-	 */
-	private createSelectedVolumeStepPreset(direction: 'up' | 'down') {
-		const selectedOptions = this.presetKeyOptions('selected')
-		const up = direction === 'up'
-		const stepDb = up ? LEVEL_STEP_DB : -LEVEL_STEP_DB
-
-		return {
-			type: 'layered' as const,
-			name: `Selected key volume ${direction}`,
-			canvas: { decoration: ButtonGraphicsDecorationType.FollowDefault },
-			elements: [
-				{
-					id: 'name',
-					type: 'text' as const,
-					name: 'Selected key',
-					x: 4,
-					y: 4,
-					width: 92,
-					height: 22,
-					text: this.expr<string>('$(local:name)'),
-					fontsize: fontsizeForBox(TEXT_KEY_NAME, 22),
-					fontsizeAllowShrink: true,
-					weight: 'bold' as const,
-					color: combineRgb(255, 255, 255),
-					halign: 'center' as const,
-					valign: 'center' as const,
-				},
-				{
-					id: 'arrow',
-					type: 'text' as const,
-					name: 'Direction',
-					x: 4,
-					y: 28,
-					width: 92,
-					height: 22,
-					text: up ? '\u25b2' : '\u25bc',
-					fontsize: fontsizeForBox(TEXT_ARROW, 22),
-					fontsizeAllowShrink: true,
-					color: combineRgb(255, 255, 255),
-					halign: 'center' as const,
-					valign: 'center' as const,
-				},
-				{
-					id: 'level-text',
-					type: 'text' as const,
-					name: 'Level',
-					x: 4,
-					y: 54,
-					width: 92,
-					height: 20,
-					text: this.expr<string>('$(local:level) dB'),
-					fontsize: fontsizeForBox(TEXT_LEVEL, 20),
-					fontsizeAllowShrink: true,
-					font: 'companion-mono' as const,
-					color: combineRgb(200, 225, 255),
-					halign: 'center' as const,
-					valign: 'center' as const,
-				},
-				{
-					id: 'level-bar',
-					type: 'gauge' as const,
-					name: 'Listen level',
-					x: 8,
-					y: 84,
-					width: 84,
-					height: 8,
-					orientation: 'horizontal' as const,
-					value: this.expr<number>('$(local:level)'),
-					min: MIN_LISTEN_LEVEL_DB_DISPLAY,
-					max: MAX_LISTEN_LEVEL_DB,
-					fillEnabled: true,
-					roundedEnds: true,
-					trackStyle: 'dimmed' as const,
-					trackAmount: 18,
-					multiColour: true,
-					stops: [
-						{ value: MIN_LISTEN_LEVEL_DB_DISPLAY, color: combineRgb(70, 130, 180), gradient: true },
-						{ value: 0, color: combineRgb(200, 225, 255), gradient: true },
-						{ value: MAX_LISTEN_LEVEL_DB, color: combineRgb(255, 190, 60), gradient: false },
-					],
-				},
-			],
-			localVariables: [
-				{
-					variableName: 'name',
-					variableType: 'feedback' as const,
-					feedbackId: 'key_name' as const,
-					options: selectedOptions,
-				},
-				{
-					variableName: 'level',
-					variableType: 'feedback' as const,
-					feedbackId: 'key_listen_level_db' as const,
-					options: selectedOptions,
-				},
-			],
-			feedbacks: [],
-			steps: [
-				{
-					down: [
-						{ actionId: 'listen_level_delta' as const, options: { ...selectedOptions, delta_db: stepDb } },
-					],
-					up: [],
-					// Held past half a second, keep stepping every 150ms.
-					500: {
-						options: { runWhileHeld: true },
-						actions: [
-							{ actionId: 'listen_level_delta' as const, options: { ...selectedOptions, delta_db: stepDb } },
-						],
-					},
-				},
-			],
-		}
-	}
-
-	private createSelectedVolumePreset() {
-		const selectedOptions = this.presetKeyOptions('selected')
-
-		return {
-			type: 'layered' as const,
-			name: 'Selected key volume',
-			canvas: { decoration: ButtonGraphicsDecorationType.FollowDefault },
-			elements: [
-				{
-					id: 'level-ring',
-					type: 'gauge' as const,
-					name: 'Level ring',
-					x: 6,
-					y: 6,
-					width: 88,
-					height: 88,
-					orientation: 'ring' as const,
-					value: this.expr<number>('$(local:level)'),
-					min: MIN_LISTEN_LEVEL_DB_DISPLAY,
-					max: MAX_LISTEN_LEVEL_DB,
-					// Degrees clockwise from the top; this sweeps 270 degrees with a gap at the bottom.
-					startAngle: 225,
-					endAngle: 135,
-					ringWidth: 10,
-					roundedEnds: true,
-					fillEnabled: true,
-					trackStyle: 'dimmed' as const,
-					// How much colour the unfilled rail keeps; low so the fill reads as a level.
-					trackAmount: 18,
-					multiColour: true,
-					stops: [
-						{ value: MIN_LISTEN_LEVEL_DB_DISPLAY, color: combineRgb(70, 130, 180), gradient: true },
-						{ value: 0, color: combineRgb(200, 225, 255), gradient: true },
-						{ value: MAX_LISTEN_LEVEL_DB, color: combineRgb(255, 190, 60), gradient: false },
-					],
-				},
-				{
-					id: 'name',
-					type: 'text' as const,
-					name: 'Selected key',
-					// Kept inside the ring's hole so long names shrink rather than run under it.
-					x: 26,
-					y: 22,
-					width: 48,
-					height: 26,
-					text: this.expr<string>('$(local:name)'),
-					fontsize: fontsizeForBox(TEXT_KEY_NAME, 26),
-					fontsizeAllowShrink: true,
-					weight: 'bold' as const,
-					color: combineRgb(255, 255, 255),
-					halign: 'center' as const,
-					valign: 'center' as const,
-				},
-				{
-					id: 'level-text',
-					type: 'text' as const,
-					name: 'Level',
-					x: 26,
-					y: 48,
-					width: 48,
-					height: 24,
-					text: this.expr<string>('$(local:level) dB'),
-					fontsize: fontsizeForBox(TEXT_LEVEL, 24),
-					fontsizeAllowShrink: true,
-					font: 'companion-mono' as const,
-					color: combineRgb(200, 225, 255),
-					halign: 'center' as const,
-					valign: 'center' as const,
-				},
-			],
-			localVariables: [
-				{
-					variableName: 'name',
-					variableType: 'feedback' as const,
-					feedbackId: 'key_name' as const,
-					options: selectedOptions,
-				},
-				{
-					variableName: 'level',
-					variableType: 'feedback' as const,
-					feedbackId: 'key_listen_level_db' as const,
-					options: selectedOptions,
-				},
-			],
-			feedbacks: [],
-			steps: [
-				{
-					down: [{ actionId: 'listen_level' as const, options: { ...selectedOptions, level: 0 } }],
-					up: [],
-					rotate_left: [
-						{ actionId: 'listen_level_delta' as const, options: { ...selectedOptions, delta_db: -LEVEL_STEP_DB } },
-					],
-					rotate_right: [
-						{ actionId: 'listen_level_delta' as const, options: { ...selectedOptions, delta_db: LEVEL_STEP_DB } },
-					],
-				},
-			],
 		}
 	}
 
@@ -1907,6 +765,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			mic_muted: { name: 'Microphone muted (or held by no device)' },
 			mic_device: { name: 'Device holding the microphone' },
 			mic_holder_online: { name: 'Device holding the microphone is online' },
+			mic_open: { name: 'Microphone sending audio (unmuted, or talking through the mute)' },
 			mic_error: { name: 'Last microphone error' },
 			key_count: { name: 'Key count' },
 			selected_key_index: { name: 'Selected key index' },
@@ -1948,8 +807,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		const values: CompanionVariableValues = {
 			user_id: this.userId,
 			display_name: this.displayName,
-			connected: this.isSocketOpen(),
-			mic_muted: !this.isMicLive(),
+			connected: this.isConnected(),
+			mic_muted: !this.isMicUnmuted(),
+			mic_open: this.isMicOpen(),
 			mic_device: this.mic.device_name ?? this.mic.device_id ?? '',
 			mic_holder_online: this.mic.holder_online,
 			mic_error: this.micError,
@@ -1960,15 +820,15 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		values.selected_key_index = selectedKey ? this.keys.indexOf(selectedKey) : -1
 		values.selected_key_name = selectedKey?.display_name ?? ''
 		values.selected_key_target_id = selectedKey?.target_id ?? ''
-		values.selected_key_talk = selectedKey ? this.getTalkActive(selectedKey) : false
-		values.selected_key_listen = selectedKey ? this.getListenActive(selectedKey) : false
-		values.selected_key_level = selectedKey ? this.formatListenLevelDb(this.getListenLevelDb(selectedKey)) : ''
+		values.selected_key_talk = selectedKey ? this.keyState.talk(selectedKey) : false
+		values.selected_key_listen = selectedKey ? this.keyState.listen(selectedKey) : false
+		values.selected_key_level = selectedKey ? formatListenLevelDb(this.keyState.levelDb(selectedKey)) : ''
 
 		const seenTargetNames = new Set<string>()
 		for (const [index, key] of this.keys.entries()) {
-			const talk = this.getTalkActive(key)
-			const listen = this.getListenActive(key)
-			const level = this.formatListenLevelDb(this.getListenLevelDb(key))
+			const talk = this.keyState.talk(key)
+			const listen = this.keyState.listen(key)
+			const level = formatListenLevelDb(this.keyState.levelDb(key))
 			const sanitized = sanitizeName(key.display_name)
 
 			values[`key_${index}_name`] = key.display_name
@@ -1996,135 +856,18 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.setVariableValues(values)
 	}
 
-	private getKeySelectorOptions() {
-		return [
-			{
-				type: 'dropdown' as const,
-				id: 'selection_mode',
-				label: 'Select key by',
-				default: 'target',
-				choices: keySelectChoices,
-				// The visibility expressions below read this field, and Companion
-				// only allows that for fields which cannot themselves be expressions.
-				disableAutoExpression: true,
-			},
-			{
-				type: 'number' as const,
-				id: 'key_index',
-				label: 'Key index',
-				default: 0,
-				min: 0,
-				max: Math.max(0, this.keys.length - 1),
-				range: false,
-				isVisibleExpression: "$(options:selection_mode) == 'index'",
-				// A button points at its key through an expression, so the value can
-				// name a key that is not there. Companion would drop the whole
-				// action or feedback rather than run it; letting it through instead
-				// means the module decides, and a key-less button says so.
-				allowInvalidValues: true,
-			},
-			{
-				type: 'dropdown' as const,
-				id: 'key_target',
-				label: 'Target',
-				default: this.keys[0] ? this.keyTargetToken(this.keys[0]) : '',
-				choices: this.getKeyChoices(),
-				isVisibleExpression: "$(options:selection_mode) == 'target'",
-				// As above: a target that this login no longer has still reaches the
-				// module, which resolves it to no key.
-				allowInvalidValues: true,
-			},
-		]
-	}
-
-	private getPressBehaviourOption() {
-		return {
-			type: 'dropdown' as const,
-			id: 'press_behaviour',
-			label: 'Press behaviour',
-			default: 'auto',
-			choices: pressBehaviourChoices,
-		}
-	}
-
-	/**
-	 * Option values for a key selector as a preset must supply them: every field the
-	 * selector declares needs a value, including the ones the visibility expressions
-	 * hide, or the options fail validation when the action runs.
-	 *
-	 * For 'index' and 'target' the live field reads the button's `key` local variable
-	 * rather than a value baked in here, so every action and feedback on the button
-	 * follows the one variable and the button is repointed by editing it alone.
-	 */
-	private presetKeyOptions(mode: KeySelectionMode): CompanionOptionValues {
-		const firstTarget = this.keys[0] ? this.keyTargetToken(this.keys[0]) : ''
-		return {
-			selection_mode: mode,
-			key_index: mode === 'index' ? this.expr<number>(`$(local:${KEY_LOCAL_VARIABLE})`) : 0,
-			key_target: mode === 'target' ? this.expr<string>(`$(local:${KEY_LOCAL_VARIABLE})`) : firstTarget,
-		}
-	}
-
-	/**
-	 * The button's own copy of which key it drives. Everything else on the button
-	 * reads it, so switching the button to another key is one edit, and dropping the
-	 * same preset onto several buttons only differs by this value.
-	 */
-	private keyLocalVariable(mode: 'index' | 'target'): CompanionSimplePresetLocalVariable {
-		return {
-			variableName: KEY_LOCAL_VARIABLE,
-			variableType: 'simple' as const,
-			headline: mode === 'index' ? 'Which key this button drives, by index' : 'Which key this button drives',
-			startupValue: mode === 'index' ? 0 : (this.keys[0] ? this.keyTargetToken(this.keys[0]) : ''),
-		}
-	}
-
-	private readPressBehaviour(options: CompanionOptionValues): PressBehaviour {
-		return (options.press_behaviour as PressBehaviour | undefined) ?? 'auto'
-	}
-
-	private getSetModeOption(id: string) {
-		return {
-			type: 'dropdown' as const,
-			id,
-			label: 'Mode',
-			default: 'toggle',
-			choices: setModeChoices,
-		}
-	}
-
-	private getKeyChoices(): DropdownChoice[] {
-		return this.keys.map((key) => ({
-			id: this.keyTargetToken(key),
-			label: `${key.display_name} (${key.target_type})`,
-		}))
-	}
-
 	private resolveKey(options: CompanionOptionValues): KeyConfig | undefined {
-		const selectionMode = (options.selection_mode as KeySelectionMode | undefined) ?? 'target'
-		if (selectionMode === 'selected') return this.getSelectedKey()
-		if (selectionMode === 'index') {
-			const index = Number(options.key_index ?? 0)
-			if (!Number.isInteger(index) || index < 0 || index >= this.keys.length) return undefined
-			return this.keys[index]
-		}
-
-		const target = String(options.key_target ?? '')
-		return this.keys.find((key) => this.keyTargetToken(key) === target)
-	}
-
-	private keyTargetToken(key: KeyConfig): string {
-		return `${key.target_type}:${key.target_id}`
+		return resolveKey(this.keys, options, () => this.getSelectedKey())
 	}
 
 	/** The key that volume actions and 'selected key' feedbacks operate on. */
 	private getSelectedKey(): KeyConfig | undefined {
 		if (!this.selectedKeyToken) return undefined
-		return this.keys.find((key) => this.keyTargetToken(key) === this.selectedKeyToken)
+		return this.keys.find((key) => keyTargetToken(key) === this.selectedKeyToken)
 	}
 
 	private selectKey(key: KeyConfig): void {
-		const token = this.keyTargetToken(key)
+		const token = keyTargetToken(key)
 		if (this.selectedKeyToken === token) return
 		this.selectedKeyToken = token
 		this.checkFeedbacks('key_selected')
@@ -2138,7 +881,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	private reconcileSelection(): void {
 		if (this.selectedKeyToken && this.getSelectedKey()) return
 		const fallback = this.keys.find((key) => key.can_listen) ?? this.keys[0]
-		this.selectedKeyToken = fallback ? this.keyTargetToken(fallback) : undefined
+		this.selectedKeyToken = fallback ? keyTargetToken(fallback) : undefined
 	}
 
 	private onTalkDown(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
@@ -2403,9 +1146,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 	/** Whether a key is off, held down momentarily, or latched on. */
 	private getLatchMode(key: KeyConfig, kind: KeyField): LatchMode {
-		const active = kind === 'talk' ? this.getTalkActive(key) : this.getListenActive(key)
+		const active = kind === 'talk' ? this.keyState.talk(key) : this.keyState.listen(key)
 		if (!active) return 'off'
-		return this.isLatched(key, kind) ? 'latched' : 'momentary'
+		return this.keyState.isLatched(key, kind) ? 'latched' : 'momentary'
 	}
 
 	/** Give the selection back once a borrowing listen key is released. */
@@ -2442,7 +1185,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 		switch (mode) {
 			case 'toggle': {
-				const current = kind === 'talk' ? this.getTalkActive(key) : this.getListenActive(key)
+				const current = kind === 'talk' ? this.keyState.talk(key) : this.keyState.listen(key)
 				controlState.latched.set(key.target_id, !current)
 				break
 			}
@@ -2464,15 +1207,15 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 	private onListenLevelSetDb(key: KeyConfig, levelDb: number): void {
 		if (!key.can_listen) return
-		const linearLevel = this.clampListenLevelLinear(key, dbToLinear(levelDb))
-		this.setListenLevelLocal(key, linearLevel)
-		this.send({ type: 'set_key_level', key: this.keyRef(key), level: linearLevel })
+		const linearLevel = clampListenLevelLinear(dbToLinear(levelDb))
+		this.keyState.setLevel(key, linearLevel)
+		this.send({ type: 'set_key_level', key: keyRef(key), level: linearLevel })
 		this.pushVariableValues()
 	}
 
 	private onListenLevelAdjustDb(key: KeyConfig, deltaDb: number): void {
 		if (!key.can_listen) return
-		const nextLevelDb = this.getListenLevelDb(key) + deltaDb
+		const nextLevelDb = this.keyState.levelDb(key) + deltaDb
 		this.onListenLevelSetDb(key, nextLevelDb)
 	}
 
@@ -2485,12 +1228,20 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	 * server may replay a message, and a replayed toggle would undo itself.
 	 */
 	private onMicToggle(): void {
-		this.onSetMicMuted(this.isMicLive())
+		this.onSetMicMuted(this.isMicUnmuted())
 	}
 
-	/** Whether some device holds the mic and it is open. */
-	private isMicLive(): boolean {
+	/**
+	 * Whether some device holds the mic and it is not muted. What mute and toggle
+	 * act on: a held talk key opens a muted mic without unmuting it.
+	 */
+	private isMicUnmuted(): boolean {
 		return this.mic.device_id !== null && !this.mic.muted
+	}
+
+	/** Whether some device holds the mic and is sending audio through it. */
+	private isMicOpen(): boolean {
+		return this.mic.device_id !== null && this.mic.open
 	}
 
 	private wasShortPress(controlState: KeyControlState, targetId: string): boolean {
@@ -2507,10 +1258,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		active: boolean,
 		options: { forceSend?: boolean; momentary?: boolean } = {},
 	): void {
-		const current = this.getTalkActive(key)
+		const current = this.keyState.talk(key)
 		if (current === active && !options.forceSend) return
 
-		this.stateTalkMapForKey(key)[key.target_id] = active
+		this.keyState.setActive(key, 'talk', active)
 		const momentary =
 			options.momentary ??
 			(active &&
@@ -2528,10 +1279,10 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		active: boolean,
 		options: { forceSend?: boolean; momentary?: boolean } = {},
 	): void {
-		const current = this.getListenActive(key)
+		const current = this.keyState.listen(key)
 		if (current === active && !options.forceSend) return
 
-		this.stateListenMapForKey(key)[key.target_id] = active
+		this.keyState.setActive(key, 'listen', active)
 		const momentary =
 			options.momentary ??
 			(active &&
@@ -2555,15 +1306,11 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		}
 		this.send({
 			type: 'set_key_state',
-			key: this.keyRef(key),
+			key: keyRef(key),
 			field,
 			hold,
 			active,
 		})
-	}
-
-	private keyRef(key: KeyConfig): { target_type: string; target_id: string } {
-		return { target_type: key.target_type, target_id: key.target_id }
 	}
 
 	/**
@@ -2572,13 +1319,13 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	 * crashes mid-press from leaving a mic open.
 	 */
 	private recordHold(key: KeyConfig, field: KeyField, active: boolean): void {
-		const token = this.keyTargetToken(key)
+		const token = keyTargetToken(key)
 		const current = this.heldKeys.get(token)
 		const talk = field === 'talk' ? active : (current?.talk ?? false)
 		const listen = field === 'listen' ? active : (current?.listen ?? false)
 
 		if (talk || listen) {
-			this.heldKeys.set(token, { key: this.keyRef(key), talk, listen })
+			this.heldKeys.set(token, { key: keyRef(key), talk, listen })
 		} else {
 			this.heldKeys.delete(token)
 		}
@@ -2612,47 +1359,6 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		}
 	}
 
-	private getTalkActive(key: KeyConfig): boolean {
-		return this.stateTalkMapForKey(key)[key.target_id] ?? false
-	}
-
-	private getListenActive(key: KeyConfig): boolean {
-		return this.stateListenMapForKey(key)[key.target_id] ?? false
-	}
-
-	private getListenLevel(key: KeyConfig): number {
-		return this.stateListenLevelMapForKey(key)[key.target_id] ?? 1
-	}
-
-	private getListenLevelDb(key: KeyConfig): number {
-		return linearToDb(this.getListenLevel(key))
-	}
-
-	private setListenLevelLocal(key: KeyConfig, level: number): void {
-		this.stateListenLevelMapForKey(key)[key.target_id] = level
-	}
-
-	private clampListenLevelLinear(_key: KeyConfig, level: number): number {
-		return clamp(level, 0, dbToLinear(MAX_LISTEN_LEVEL_DB))
-	}
-
-	private formatListenLevelDb(levelDb: number): string {
-		if (levelDb <= MIN_LISTEN_LEVEL_DB) return `${MIN_LISTEN_LEVEL_DB}`
-		return levelDb.toFixed(1)
-	}
-
-	private stateTalkMapForKey(key: KeyConfig): Record<string, boolean> {
-		return key.target_type === 'party_line' ? this.state.party_line_talk_active : this.state.talk_active
-	}
-
-	private stateListenMapForKey(key: KeyConfig): Record<string, boolean> {
-		return key.target_type === 'party_line' ? this.state.party_line_listen_active : this.state.listen_active
-	}
-
-	private stateListenLevelMapForKey(key: KeyConfig): Record<string, number> {
-		return key.target_type === 'party_line' ? this.state.party_line_listen_level : this.state.listen_level
-	}
-
 	/**
 	 * Only users log in and out. Party lines and groups are always there, so they
 	 * always read as connected rather than fading away.
@@ -2663,18 +1369,11 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	}
 
 	private send(message: Message): boolean {
-		if (!this.isSocketOpen()) return false
-		try {
-			this.ws?.send(JSON.stringify(message))
-			return true
-		} catch (error) {
-			this.log('error', `Failed to send websocket message: ${String(error)}`)
-			return false
-		}
+		return this.connection?.send(message) ?? false
 	}
 
-	private isSocketOpen(): boolean {
-		return this.ws?.readyState === WebSocket.OPEN
+	private isConnected(): boolean {
+		return this.connection?.isOpen ?? false
 	}
 
 	private resetSession(): void {
@@ -2683,8 +1382,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.keys = []
 		this.availableUsers = []
 		this.connectedUsers.clear()
-		this.state = createEmptyState()
-		this.latchedState = undefined
+		this.keyState.reset()
+		this.retryReason = undefined
 		this.lastTapAt.clear()
 		this.talkLatchBeforeTap.clear()
 		for (const timer of this.settleTimers.values()) clearTimeout(timer)
@@ -2696,13 +1395,13 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.selectionBeforeHold.clear()
 		this.secondTapInProgress.clear()
 		this.pressApplied.clear()
-		this.talkControlState = this.createControlState()
-		this.listenControlState = this.createControlState()
+		this.talkControlState = createControlState()
+		this.listenControlState = createControlState()
 		this.mic = createEmptyMicState()
 		this.micError = ''
 	}
 }
 
 export default LiveMatrixInstance
-export type { LiveMatrixConfig }
+export type { LiveMatrixConfig, LiveMatrixSecrets }
 export { UpgradeScripts } from './upgrades.js'

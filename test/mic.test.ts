@@ -1,192 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { WebSocketServer, type WebSocket as ServerSocket } from 'ws'
-import type { AddressInfo } from 'node:net'
+import { FakeLiveMatrix, INITIAL_MIC, startInstance, waitFor, type Message } from './support/fake-livematrix.js'
 
-/**
- * A stand-in for Companion's InstanceBase. It keeps whatever the module
- * registers, so the test can inspect definitions and variable values and run
- * actions and feedbacks by id the way Companion would.
- */
-vi.mock('@companion-module/base', () => {
-	class InstanceBase {
-		actions: Record<string, any> = {}
-		feedbacks: Record<string, any> = {}
-		variableDefinitions: Record<string, any> = {}
-		presetStructure: any[] = []
-		presets: Record<string, any> = {}
-		values: Record<string, unknown> = {}
-		checkedFeedbacks: string[] = []
-		statuses: Array<{ status: string; message?: string | null }> = []
-
-		constructor(_internal?: unknown) {}
-
-		setActionDefinitions(definitions: Record<string, any>): void {
-			this.actions = definitions
-		}
-		setFeedbackDefinitions(definitions: Record<string, any>): void {
-			this.feedbacks = definitions
-		}
-		setVariableDefinitions(definitions: Record<string, any>): void {
-			this.variableDefinitions = definitions
-		}
-		setPresetDefinitions(structure: any[], presets: Record<string, any>): void {
-			this.presetStructure = structure
-			this.presets = presets
-		}
-		setVariableValues(values: Record<string, unknown>): void {
-			Object.assign(this.values, values)
-		}
-		checkFeedbacks(...ids: string[]): void {
-			this.checkedFeedbacks.push(...ids)
-		}
-		checkAllFeedbacks(): void {
-			this.checkedFeedbacks.push('*')
-		}
-		updateStatus(status: string, message?: string | null): void {
-			this.statuses.push({ status, message })
-		}
-		log(_level: string, _message: string): void {}
-
-		async runAction(actionId: string, options: Record<string, unknown> = {}): Promise<void> {
-			const definition = this.actions[actionId]
-			if (!definition) throw new Error(`No action ${actionId}`)
-			await definition.callback({ id: `test-${actionId}`, actionId, controlId: 'test', options })
-		}
-		async runFeedback(feedbackId: string, options: Record<string, unknown> = {}): Promise<unknown> {
-			const definition = this.feedbacks[feedbackId]
-			if (!definition) throw new Error(`No feedback ${feedbackId}`)
-			return definition.callback({ id: `test-${feedbackId}`, feedbackId, controlId: 'test', options })
-		}
-	}
-
-	return {
-		InstanceBase,
-		InstanceStatus: {
-			Ok: 'ok',
-			Connecting: 'connecting',
-			Disconnected: 'disconnected',
-			ConnectionFailure: 'connection_failure',
-			BadConfig: 'bad_config',
-			AuthenticationFailure: 'authentication_failure',
-		},
-		Regex: { HOSTNAME: '/^.*$/' },
-		combineRgb: (r: number, g: number, b: number) => ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff),
-		ButtonGraphicsDecorationType: { FollowDefault: 'followDefault' },
-	}
-})
+vi.mock('@companion-module/base', () => import('./support/companion-base.js'))
 
 const { LiveMatrixInstance } = await import('../src/index.js')
 
-type Message = Record<string, any>
-type Mode = 'server' | 'client'
-type MicPush = { device_id?: string | null; device_name?: string | null; holder_online?: boolean; muted?: boolean }
+type MicPush = {
+	device_id?: string | null
+	device_name?: string | null
+	holder_online?: boolean
+	muted?: boolean
+	open?: boolean
+}
 
 const RED = (255 << 16) | 0
-
-const LOGIN_SUCCESS = {
-	type: 'login_success',
-	user_id: 'user-a',
-	display_name: 'Alice',
-	device_id: 'companion-1',
-	keys: [
-		{
-			id: 'k1',
-			target_type: 'user',
-			target_id: 'user-b',
-			display_name: 'Bob',
-			can_listen: true,
-			can_talk: true,
-			allow_listen_latching: true,
-			allow_talk_latching: true,
-		},
-	],
-	available_users: [{ id: 'user-b', display_name: 'Bob', is_virtual: false, is_connected: true }],
-}
-
-const STATE_UPDATE = {
-	type: 'state_update',
-	state: {
-		talk_active: {},
-		listen_active: {},
-		listen_level: {},
-		party_line_talk_active: {},
-		party_line_listen_active: {},
-		party_line_listen_level: {},
-	},
-}
-
-const INITIAL_MIC = {
-	type: 'mic_state',
-	device_id: 'desk-1',
-	device_name: 'Desk',
-	holder_online: true,
-	muted: false,
-	is_mine: false,
-}
-
-/**
- * Plays the livematrix server (`/ws`, answers a login) or the app's local
- * control API (`/`, greets straight away with no login). Both speak the same
- * protocol after that, so one fake covers both.
- */
-class FakeLiveMatrix {
-	readonly received: Message[] = []
-	readonly paths: string[] = []
-	private readonly wss: WebSocketServer
-	private socket: ServerSocket | undefined
-	private greeted = false
-
-	constructor(readonly mode: Mode) {
-		this.wss = new WebSocketServer({ host: '127.0.0.1', port: 0 })
-		this.wss.on('connection', (socket, request) => {
-			this.socket = socket
-			this.paths.push(request.url ?? '')
-			socket.on('message', (data) => {
-				const message = JSON.parse(data.toString()) as Message
-				this.received.push(message)
-				if (message.type === 'login' && mode === 'server') this.greet()
-			})
-			if (mode === 'client') this.greet()
-		})
-	}
-
-	async listening(): Promise<number> {
-		if (!this.wss.address()) await new Promise((resolve) => this.wss.once('listening', resolve))
-		return (this.wss.address() as AddressInfo).port
-	}
-
-	private greet(): void {
-		this.push(LOGIN_SUCCESS)
-		this.push(STATE_UPDATE)
-		this.push(INITIAL_MIC)
-		this.greeted = true
-	}
-
-	get isGreeted(): boolean {
-		return this.greeted
-	}
-
-	push(message: Message): void {
-		this.socket?.send(JSON.stringify(message))
-	}
-
-	sent(type: string): Message[] {
-		return this.received.filter((message) => message.type === type)
-	}
-
-	async close(): Promise<void> {
-		for (const client of this.wss.clients) client.terminate()
-		await new Promise<void>((resolve) => this.wss.close(() => resolve()))
-	}
-}
-
-async function waitFor(condition: () => boolean, what: string): Promise<void> {
-	const deadline = Date.now() + 2000
-	while (!condition()) {
-		if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`)
-		await new Promise((resolve) => setTimeout(resolve, 5))
-	}
-}
 
 for (const mode of ['server', 'client'] as const) {
 	describe(`mic mute over the ${mode} connection`, () => {
@@ -208,31 +35,7 @@ for (const mode of ['server', 'client'] as const) {
 
 		beforeEach(async () => {
 			fake = new FakeLiveMatrix(mode)
-			const port = await fake.listening()
-			instance = new LiveMatrixInstance({} as any)
-			const config =
-				mode === 'server'
-					? {
-							connection_mode: 'server',
-							host: '127.0.0.1',
-							port,
-							username: 'alice',
-							server_tls: false,
-							client_host: '',
-							client_port: 0,
-							client_tls: false,
-						}
-					: {
-							connection_mode: 'client',
-							host: '',
-							port: 0,
-							username: '',
-							server_tls: false,
-							client_host: '127.0.0.1',
-							client_port: port,
-							client_tls: false,
-						}
-			await instance.init(config, true, mode === 'server' ? { password: 'secret' } : {})
+			instance = await startInstance(LiveMatrixInstance, fake)
 			await waitFor(() => fake.isGreeted && instance.values.mic_device === 'Desk', 'the initial mic state')
 		})
 
@@ -244,7 +47,9 @@ for (const mode of ['server', 'client'] as const) {
 		it('connects the way this mode is meant to', () => {
 			if (mode === 'server') {
 				expect(fake.paths).toEqual(['/ws'])
-				expect(fake.sent('login')).toEqual([{ type: 'login', username: 'alice', password: 'secret' }])
+				expect(fake.sent('login')).toEqual([
+					{ type: 'login', username: 'alice', password: 'secret', device_id: 'companion-conn-1' },
+				])
 			} else {
 				expect(fake.paths).toEqual(['/'])
 				expect(fake.sent('login')).toEqual([])
@@ -270,7 +75,7 @@ for (const mode of ['server', 'client'] as const) {
 			expect(Object.keys(instance.actions)).toEqual(expect.arrayContaining(['mic_mute', 'mic_unmute', 'mic_toggle']))
 			expect(Object.keys(instance.feedbacks)).toEqual(expect.arrayContaining(['mic_muted', 'mic_live']))
 			expect(Object.keys(instance.variableDefinitions)).toEqual(
-				expect.arrayContaining(['mic_muted', 'mic_device', 'mic_holder_online', 'mic_error']),
+				expect.arrayContaining(['mic_muted', 'mic_open', 'mic_device', 'mic_holder_online', 'mic_error']),
 			)
 			expect(instance.feedbacks.mic_muted.defaultStyle.bgcolor).toBe(RED)
 
@@ -336,7 +141,7 @@ for (const mode of ['server', 'client'] as const) {
 			expect(await instance.runFeedback('mic_live')).toBe(true)
 
 			instance.checkedFeedbacks.length = 0
-			await pushMic({ device_id: 'phone-1', device_name: 'Phone', holder_online: false, muted: true })
+			await pushMic({ device_id: 'phone-1', device_name: 'Phone', holder_online: false, muted: true, open: false })
 			expect(instance.values).toMatchObject({ mic_muted: true, mic_device: 'Phone', mic_holder_online: false })
 			expect(instance.checkedFeedbacks).toEqual(expect.arrayContaining(['mic_muted', 'mic_live']))
 			expect(await instance.runFeedback('mic_muted')).toBe(true)
@@ -348,10 +153,34 @@ for (const mode of ['server', 'client'] as const) {
 			expect(await instance.runFeedback('mic_live')).toBe(true)
 
 			// No holder reads as muted, whatever the stored flag says.
-			await pushMic({ device_id: null, device_name: null, holder_online: false, muted: false })
+			await pushMic({ device_id: null, device_name: null, holder_online: false, muted: false, open: false })
 			expect(instance.values).toMatchObject({ mic_muted: true, mic_device: '', mic_holder_online: false })
 			expect(await instance.runFeedback('mic_muted')).toBe(true)
 			expect(await instance.runFeedback('mic_live')).toBe(false)
+		})
+
+		it('shows a talk key held through the mute as live but still muted', async () => {
+			await pushMic({ muted: true, open: true })
+			expect(instance.values).toMatchObject({ mic_muted: true, mic_open: true })
+			expect(await instance.runFeedback('mic_muted')).toBe(true)
+			expect(await instance.runFeedback('mic_live')).toBe(true)
+
+			// Toggle follows the mute, not the open gate: a muted mic gets unmuted.
+			await instance.runAction('mic_toggle')
+			expect(await lastSent('set_mic_muted', 1)).toEqual({ type: 'set_mic_muted', muted: false })
+
+			await pushMic({ muted: true, open: false })
+			expect(instance.values).toMatchObject({ mic_muted: true, mic_open: false })
+			expect(await instance.runFeedback('mic_live')).toBe(false)
+		})
+
+		it('reads a mic state without `open` as open exactly when unmuted', async () => {
+			const { open: _open, ...legacy } = INITIAL_MIC
+			const checks = () => instance.checkedFeedbacks.filter((id: string) => id === 'mic_muted').length
+			const before = checks()
+			fake.push({ ...legacy, muted: true })
+			await waitFor(() => checks() > before, 'mic_state to arrive')
+			expect(instance.values).toMatchObject({ mic_muted: true, mic_open: false })
 		})
 
 		it('shows no_mic_available until the next mic state', async () => {

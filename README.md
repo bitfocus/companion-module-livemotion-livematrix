@@ -45,8 +45,20 @@ into another checkout will fail to load.
 npm test
 ```
 
-The suite runs the module against a fake LiveMatrix WebSocket endpoint, in both
-connection modes, with Companion's `InstanceBase` mocked out.
+The suite runs the module against a fake LiveMatrix WebSocket endpoint
+(`test/support/`), in both connection modes, with Companion's `InstanceBase`
+mocked out.
+
+## Layout
+
+- `src/index.ts`: the instance, with its actions, feedbacks, variables and key
+  press handling
+- `src/connection.ts`: the WebSocket, reconnects and keepalive
+- `src/protocol.ts`: wire message types
+- `src/key-state.ts`: which part of a state update each kind of key reads
+- `src/presets.ts`, `src/options.ts`: presets, and the option fields they share
+  with actions and feedbacks
+- `src/config.ts`, `src/levels.ts`: connection config, and level conversions
 
 ## Packaging
 
