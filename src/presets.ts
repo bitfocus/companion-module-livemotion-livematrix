@@ -38,12 +38,24 @@ const TEXT_KEY_NAME = 18
 const TEXT_LEVEL = 14
 const TEXT_ARROW = 18
 
+const KEY_LABEL_COLOR = combineRgb(255, 255, 255)
+
 /**
  * How much of a key is left showing when nobody is logged in on the other end.
  * A key to somebody who is not there still exists and can still be latched, so
  * it is faded rather than hidden.
  */
 const OFFLINE_OPACITY = 35
+
+/**
+ * A colour faded into the black behind it. Offline keys fade by colour rather
+ * than by an `opacity` override: Companion 5.1 computes such an override but
+ * the button it draws comes out at full strength.
+ */
+function offline(color: number): number {
+	const fade = (channel: number) => Math.round((channel * OFFLINE_OPACITY) / 100)
+	return combineRgb(fade((color >> 16) & 0xff), fade((color >> 8) & 0xff), fade(color & 0xff))
+}
 
 /** Colour along a level meter: cool below unity, warm above it. */
 const LEVEL_STOPS = [
@@ -353,7 +365,7 @@ class PresetBuilder {
 					fontsize: fontsizeForBox(TEXT_KEY_LABEL, labelBoxHeight),
 					fontsizeAllowShrink: true,
 					weight: 'bold' as const,
-					color: combineRgb(255, 255, 255),
+					color: KEY_LABEL_COLOR,
 					halign: 'center' as const,
 					valign: 'center' as const,
 				},
@@ -403,8 +415,12 @@ class PresetBuilder {
 					feedbackId: 'user_disconnected' as const,
 					options: keyOptions,
 					styleOverrides: [
-						{ elementId: 'label', elementProperty: 'opacity', override: overrideValue(OFFLINE_OPACITY) },
-						{ elementId: 'border', elementProperty: 'opacity', override: overrideValue(OFFLINE_OPACITY) },
+						{ elementId: 'label', elementProperty: 'color', override: overrideValue(offline(KEY_LABEL_COLOR)) },
+						{
+							elementId: 'border',
+							elementProperty: 'borderColor',
+							override: overrideValue(offline(talk ? TALK_BORDER : LISTEN_BORDER)),
+						},
 					],
 				},
 			],
@@ -528,7 +544,7 @@ class PresetBuilder {
 					fontsize: fontsizeForBox(TEXT_KEY_LABEL, KEY_LABEL_BOX_HEIGHT),
 					fontsizeAllowShrink: true,
 					weight: 'bold' as const,
-					color: combineRgb(255, 255, 255),
+					color: KEY_LABEL_COLOR,
 					halign: 'center' as const,
 					valign: 'center' as const,
 				},
@@ -586,7 +602,7 @@ class PresetBuilder {
 					feedbackId: 'user_disconnected' as const,
 					options: keyOptions,
 					styleOverrides: [
-						{ elementId: 'label', elementProperty: 'opacity', override: overrideValue(OFFLINE_OPACITY) },
+						{ elementId: 'label', elementProperty: 'color', override: overrideValue(offline(KEY_LABEL_COLOR)) },
 					],
 				},
 			],
