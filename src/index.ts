@@ -1008,7 +1008,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		latchedBefore: boolean,
 		doubleTapListen: boolean,
 	): void {
-		const wasMomentary = this.pressApplied.delete(key.target_id)
+		this.pressApplied.delete(key.target_id)
 		this.talkControlState.pressing.set(key.target_id, false)
 
 		// A late second tap - one that arrived after the settle window, so the
@@ -1027,21 +1027,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			this.talkLatchBeforeTap.set(key.target_id, latchedBefore)
 		}
 
-		const newEffective = this.getEffectiveState(this.talkControlState, key.target_id)
-		if (wasMomentary && newEffective && (this.talkControlState.latched.get(key.target_id) ?? false)) {
-			// Hand the press over to the latched layer before letting go of it,
-			// so the key never drops out for a moment in between.
-			this.setTalkActive(key, true, { forceSend: true, momentary: false })
-			this.sendKeyState(key, 'talk', 'momentary', false)
-		} else if (wasMomentary) {
-			// The press simply ended. It has to be released on the layer it was
-			// taken on: a latched `false` says nothing about a press, so the
-			// heartbeat would go on renewing it and the mic would stay open with
-			// nobody holding the key.
-			this.setTalkActive(key, newEffective, { forceSend: true, momentary: true })
-		} else {
-			this.setTalkActive(key, newEffective)
-		}
+		this.settleRelease(key, 'talk', latchedBefore, this.talkControlState.latched.get(key.target_id) ?? false)
 
 		if (secondTap) {
 			this.onSetKeyMode(key, 'listen', 'toggle')
@@ -1107,23 +1093,34 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		if (this.latchesOnPress(key, 'listen', behaviour)) return
 
 		const wasShortPress = this.wasShortPress(this.listenControlState, key.target_id)
-		const wasMomentary = this.listenControlState.pressing.get(key.target_id) ?? false
+		const latchedBefore = this.listenControlState.latched.get(key.target_id) ?? false
 
 		this.listenControlState.pressing.set(key.target_id, false)
-		if (this.latchesOnRelease(key, 'listen', behaviour) && wasShortPress) {
-			this.listenControlState.latched.set(key.target_id, !(this.listenControlState.latched.get(key.target_id) ?? false))
-		}
+		const latchedAfter =
+			this.latchesOnRelease(key, 'listen', behaviour) && wasShortPress ? !latchedBefore : latchedBefore
+		this.listenControlState.latched.set(key.target_id, latchedAfter)
 
-		const newEffective = this.getEffectiveState(this.listenControlState, key.target_id)
-		if (wasMomentary && newEffective && (this.listenControlState.latched.get(key.target_id) ?? false)) {
-			this.setListenActive(key, true, { forceSend: true, momentary: false })
-			this.sendKeyState(key, 'listen', 'momentary', false)
-		} else if (wasMomentary) {
-			// Released on the layer it was held on - see the talk half.
-			this.setListenActive(key, newEffective, { forceSend: true, momentary: true })
-		} else {
-			this.setListenActive(key, newEffective)
-		}
+		this.settleRelease(key, 'listen', latchedBefore, latchedAfter)
+	}
+
+	/**
+	 * Tell the server what a release left behind, each layer only about its own
+	 * change. The latched layer moves if the press flipped it; the press, if one
+	 * went out, is let go of as a press. Neither stands in for the other: a
+	 * momentary release leaves a latch on, and a latched `false` leaves a press
+	 * held for the heartbeat to go on renewing.
+	 */
+	private settleRelease(key: KeyConfig, field: KeyField, latchedBefore: boolean, latchedAfter: boolean): void {
+		const held = this.heldKeys.get(keyTargetToken(key))?.[field] ?? false
+
+		// Latch before letting go, so a press that turns into a latch never
+		// drops out for a moment in between.
+		if (latchedAfter !== latchedBefore) this.sendKeyState(key, field, 'latched', latchedAfter)
+		if (held) this.sendKeyState(key, field, 'momentary', false)
+
+		this.keyState.setActive(key, field, latchedAfter)
+		this.pushVariableValues()
+		this.checkFeedbacks(`${field}_active`, `${field}_latched`, `${field}_momentary`)
 	}
 
 	/**
