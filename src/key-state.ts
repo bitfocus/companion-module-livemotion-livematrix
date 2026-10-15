@@ -24,19 +24,29 @@ export class KeyStateStore {
 	 */
 	private groupListen: Record<string, boolean> = {}
 	private groupLevel: Record<string, number> = {}
+	/** Whether the last snapshot carried group talk at all; see `apply`. */
+	private groupTalkRelayed = true
 
 	reset(): void {
 		this.state = createEmptyState()
 		this.latched = undefined
+		this.groupTalkRelayed = true
 		this.groupListen = {}
 		this.groupLevel = {}
 	}
 
 	apply(message: StateUpdateMessage): void {
+		const groupTalk = this.state.group_talk_active
 		this.state = readUserState(message.state)
 		// The effective state alone cannot say whether a key is on because it is
 		// latched or because someone is leaning on it. The server tells us both.
 		this.latched = message.latched ? readUserState(message.latched) : undefined
+
+		// Client apps relayed group talk only from a later release; before that
+		// their snapshot leaves it out. Absent is not off: keep what we last set,
+		// or every press on a group key would read as switching it on again.
+		this.groupTalkRelayed = message.state?.group_talk_active !== undefined
+		if (!this.groupTalkRelayed) this.state.group_talk_active = groupTalk
 	}
 
 	talk(key: KeyConfig): boolean {
@@ -76,6 +86,7 @@ export class KeyStateStore {
 	 */
 	isLatched(key: KeyConfig, field: KeyField): boolean {
 		if (!this.latched) return this.active(key, field)
+		if (key.target_type === 'group' && !this.groupTalkRelayed) return this.active(key, field)
 		const map = field === 'talk' ? this.talkMap(this.latched, key) : this.listenMap(this.latched, key)
 		return map[key.target_id] ?? false
 	}

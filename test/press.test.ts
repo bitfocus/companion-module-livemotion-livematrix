@@ -3,6 +3,7 @@ import {
 	FakeLiveMatrix,
 	LOGIN_SUCCESS,
 	USER_KEY,
+	emptyUserState,
 	startInstance,
 	waitFor,
 	type Message,
@@ -112,6 +113,22 @@ describe('releasing a press', () => {
 		await instance.runAction('talk_up', options)
 		expect(await layers(USER_KEY, 'talk')).toEqual({ latched: false, momentary: false })
 		expect(fake.sent('set_key_state').filter((message) => message.hold === 'latched')).toEqual([])
+	})
+
+	it('keeps group talk across snapshots from an app that leaves it out', async () => {
+		// Older client apps relay every map but group talk.
+		const { group_talk_active: _omitted, ...withoutGroups } = emptyUserState()
+		const relay = () => fake.push({ type: 'state_update', state: withoutGroups, latched: withoutGroups })
+
+		await press(GROUP_KEY, 'talk', 80)
+		relay()
+		await sleep(30)
+		expect(await instance.runFeedback('talk_latched', byTarget(GROUP_KEY))).toBe(true)
+
+		await press(GROUP_KEY, 'talk', 80)
+		relay()
+		expect(await layers(GROUP_KEY, 'talk')).toEqual({ latched: false, momentary: false })
+		expect(await instance.runFeedback('talk_active', byTarget(GROUP_KEY))).toBe(false)
 	})
 
 	it('leaves a latched key latched after a long hold', async () => {
