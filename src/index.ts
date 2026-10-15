@@ -8,7 +8,9 @@ import {
 	type CompanionFeedbackDefinitions,
 	type CompanionOptionValues,
 	type CompanionPresetDefinitions,
+	type CompanionPresetGroup,
 	type CompanionPresetSection,
+	type CompanionSimplePresetLocalVariable,
 	type CompanionVariableDefinitions,
 	type CompanionVariableValues,
 	type DropdownChoice,
@@ -220,6 +222,20 @@ const TEXT_ARROW = 18
  * it is faded rather than hidden.
  */
 const OFFLINE_OPACITY = 35
+
+/**
+ * What a key's name reads as when the button is not pointing at a key: the
+ * index is out of range, or the target is one this login does not have. The
+ * button still draws, so it has to say that it is aimed at nothing.
+ */
+const NO_KEY_NAME = 'N/A'
+
+/**
+ * The local variable every key preset points at its key with. Held on the
+ * button rather than repeated through each action and feedback, so one edit
+ * moves the whole button to another key.
+ */
+const KEY_LOCAL_VARIABLE = 'key'
 
 /**
  * Convert a size written against the button into the percentage of its own box
@@ -1083,7 +1099,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				options: this.getKeySelectorOptions(),
 				callback: async (feedback) => {
 					const key = this.resolveKey(feedback.options)
-					return key ? key.display_name : ''
+					return key ? key.display_name : NO_KEY_NAME
 				},
 			},
 			user_connected: {
@@ -1172,104 +1188,84 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		presets['selected_volume_up'] = this.createSelectedVolumeStepPreset('up')
 		presets['selected_volume_down'] = this.createSelectedVolumeStepPreset('down')
 
-		const generalPresets = ['mic_button', 'selected_volume', 'selected_volume_up', 'selected_volume_down']
-		const keyIndexPresets: string[] = []
-		const keyTargetPresets: string[] = []
-		const talkIndexPresets: string[] = []
-		const listenIndexPresets: string[] = []
-		const talkTargetPresets: string[] = []
-		const listenTargetPresets: string[] = []
-
-		for (const [index, key] of this.keys.entries()) {
-			const targetToken = this.keyTargetToken(key)
-			const safeName = sanitizeName(key.display_name)
-
-			const keyIndexId = `key_index_${index}`
-			presets[keyIndexId] = this.createLayeredKeyPreset(
-				`Intercom key ${index}`,
-				this.presetKeyOptions('index', { index, target: targetToken }),
-			)
-			keyIndexPresets.push(keyIndexId)
-
-			const keyTargetId = `key_target_${safeName}_${index}`
-			presets[keyTargetId] = this.createLayeredKeyPreset(
-				`Intercom ${key.display_name}`,
-				this.presetKeyOptions('target', { index, target: targetToken }),
-			)
-			keyTargetPresets.push(keyTargetId)
-
-			const talkIndexId = `talk_index_${index}`
-			presets[talkIndexId] = this.createSideKeyPreset(
-				'talk',
-				`Talk key ${index}`,
-				this.presetKeyOptions('index', { index, target: targetToken }),
-			)
-			talkIndexPresets.push(talkIndexId)
-
-			const listenIndexId = `listen_index_${index}`
-			presets[listenIndexId] = this.createSideKeyPreset(
-				'listen',
-				`Listen key ${index}`,
-				this.presetKeyOptions('index', { index, target: targetToken }),
-			)
-			listenIndexPresets.push(listenIndexId)
-
-			const talkTargetId = `talk_target_${safeName}_${index}`
-			presets[talkTargetId] = this.createSideKeyPreset(
-				'talk',
-				`Talk ${key.display_name}`,
-				this.presetKeyOptions('target', { index, target: targetToken }),
-			)
-			talkTargetPresets.push(talkTargetId)
-
-			const listenTargetId = `listen_target_${safeName}_${index}`
-			presets[listenTargetId] = this.createSideKeyPreset(
-				'listen',
-				`Listen ${key.display_name}`,
-				this.presetKeyOptions('target', { index, target: targetToken }),
-			)
-			listenTargetPresets.push(listenTargetId)
+		// One definition per kind of key rather than one per key: the key itself is a
+		// local variable, and the template groups below stamp a value into it for each
+		// key the login has. Skipped entirely when there are no keys, as Companion
+		// warns about definitions no group refers to.
+		if (this.keys.length > 0) {
+			presets['key_by_target'] = this.createLayeredKeyPreset('Intercom key', 'target')
+			presets['key_by_index'] = this.createLayeredKeyPreset('Intercom key (by index)', 'index')
+			presets['talk_by_target'] = this.createSideKeyPreset('talk', 'Talk key', 'target')
+			presets['talk_by_index'] = this.createSideKeyPreset('talk', 'Talk key (by index)', 'index')
+			presets['listen_by_target'] = this.createSideKeyPreset('listen', 'Listen key', 'target')
+			presets['listen_by_index'] = this.createSideKeyPreset('listen', 'Listen key (by index)', 'index')
 		}
 
 		const structure: CompanionPresetSection<LiveMatrixManifest>[] = [
 			{
-				id: 'keys-index',
-				name: 'Intercom Keys (by index)',
-				definitions: keyIndexPresets,
+				id: 'keys',
+				name: 'Intercom Keys',
+				description: 'Talk and listen on one button. The `key` variable picks which key it drives.',
+				definitions: this.keyPresetGroups('keys', 'key_by_target', 'key_by_index'),
 			},
 			{
-				id: 'keys-target',
-				name: 'Intercom Keys (by target)',
-				definitions: keyTargetPresets,
+				id: 'talk',
+				name: 'Talk Keys',
+				definitions: this.keyPresetGroups('talk', 'talk_by_target', 'talk_by_index'),
+			},
+			{
+				id: 'listen',
+				name: 'Listen Keys',
+				definitions: this.keyPresetGroups('listen', 'listen_by_target', 'listen_by_index'),
 			},
 			{
 				id: 'general',
 				name: 'Microphone and Selection',
-				definitions: generalPresets,
-			},
-			{
-				id: 'talk-index',
-				name: 'Talk Keys (by index)',
-				definitions: talkIndexPresets,
-			},
-			{
-				id: 'listen-index',
-				name: 'Listen Keys (by index)',
-				definitions: listenIndexPresets,
-			},
-			{
-				id: 'talk-target',
-				name: 'Talk Keys (by target)',
-				definitions: talkTargetPresets,
-			},
-			{
-				id: 'listen-target',
-				name: 'Listen Keys (by target)',
-				definitions: listenTargetPresets,
+				definitions: ['mic_button', 'selected_volume', 'selected_volume_up', 'selected_volume_down'],
 			},
 		]
 
 		return { structure, presets }
+	}
+
+	/**
+	 * The two ways of pointing one key preset at a key: by name, which survives the
+	 * keys being reordered, and by index, which survives them being renamed. Each is
+	 * a template over the preset's `key` local variable, so the list of keys costs one
+	 * preset rather than one per key.
+	 */
+	private keyPresetGroups(
+		idPrefix: string,
+		targetPresetId: string,
+		indexPresetId: string,
+	): CompanionPresetGroup<LiveMatrixManifest>[] {
+		if (this.keys.length === 0) return []
+
+		return [
+			{
+				type: 'template',
+				id: `${idPrefix}-target`,
+				name: 'By key',
+				presetId: targetPresetId,
+				templateVariableName: KEY_LOCAL_VARIABLE,
+				templateValues: this.keys.map((key) => ({
+					name: key.display_name,
+					value: this.keyTargetToken(key),
+				})),
+			},
+			{
+				type: 'template',
+				id: `${idPrefix}-index`,
+				name: 'By index',
+				description: 'Follows whatever key is in that position, whichever key that turns out to be.',
+				presetId: indexPresetId,
+				templateVariableName: KEY_LOCAL_VARIABLE,
+				templateValues: this.keys.map((key, index) => ({
+					name: `${index}: ${key.display_name}`,
+					value: index,
+				})),
+			},
+		]
 	}
 
 	/** Wrap a Companion expression so it is evaluated per button rather than taken literally. */
@@ -1371,7 +1367,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	 * rest and fills with it when active, brightest at the edges and darkest
 	 * through the middle so the name stays readable either way.
 	 */
-	private createSideKeyPreset(mode: KeyField, name: string, keyOptions: CompanionOptionValues) {
+	private createSideKeyPreset(mode: KeyField, name: string, selection: 'index' | 'target') {
+		const keyOptions = this.presetKeyOptions(selection)
 		const talk = mode === 'talk'
 		const accent = talk ? TALK_ACCENT : LISTEN_ACCENT
 		const shadow = talk ? TALK_SHADOW : LISTEN_SHADOW
@@ -1438,6 +1435,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				...(showLevel ? [this.levelBarElement(), this.selectedBarBorderElement()] : []),
 			],
 			localVariables: [
+				this.keyLocalVariable(selection),
 				{
 					variableName: 'name',
 					variableType: 'feedback' as const,
@@ -1515,7 +1513,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		}
 	}
 
-	private createLayeredKeyPreset(name: string, keyOptions: CompanionOptionValues) {
+	private createLayeredKeyPreset(name: string, selection: 'index' | 'target') {
+		const keyOptions = this.presetKeyOptions(selection)
 
 		return {
 			type: 'layered' as const,
@@ -1610,6 +1609,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				this.selectedBarBorderElement(),
 			],
 			localVariables: [
+				this.keyLocalVariable(selection),
 				{
 					variableName: 'name',
 					variableType: 'feedback' as const,
@@ -2017,6 +2017,11 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				max: Math.max(0, this.keys.length - 1),
 				range: false,
 				isVisibleExpression: "$(options:selection_mode) == 'index'",
+				// A button points at its key through an expression, so the value can
+				// name a key that is not there. Companion would drop the whole
+				// action or feedback rather than run it; letting it through instead
+				// means the module decides, and a key-less button says so.
+				allowInvalidValues: true,
 			},
 			{
 				type: 'dropdown' as const,
@@ -2025,6 +2030,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				default: this.keys[0] ? this.keyTargetToken(this.keys[0]) : '',
 				choices: this.getKeyChoices(),
 				isVisibleExpression: "$(options:selection_mode) == 'target'",
+				// As above: a target that this login no longer has still reaches the
+				// module, which resolves it to no key.
+				allowInvalidValues: true,
 			},
 		]
 	}
@@ -2043,15 +2051,31 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	 * Option values for a key selector as a preset must supply them: every field the
 	 * selector declares needs a value, including the ones the visibility expressions
 	 * hide, or the options fail validation when the action runs.
+	 *
+	 * For 'index' and 'target' the live field reads the button's `key` local variable
+	 * rather than a value baked in here, so every action and feedback on the button
+	 * follows the one variable and the button is repointed by editing it alone.
 	 */
-	private presetKeyOptions(
-		mode: KeySelectionMode,
-		key?: { index?: number; target?: string },
-	): CompanionOptionValues {
+	private presetKeyOptions(mode: KeySelectionMode): CompanionOptionValues {
+		const firstTarget = this.keys[0] ? this.keyTargetToken(this.keys[0]) : ''
 		return {
 			selection_mode: mode,
-			key_index: key?.index ?? 0,
-			key_target: key?.target ?? (this.keys[0] ? this.keyTargetToken(this.keys[0]) : ''),
+			key_index: mode === 'index' ? this.expr<number>(`$(local:${KEY_LOCAL_VARIABLE})`) : 0,
+			key_target: mode === 'target' ? this.expr<string>(`$(local:${KEY_LOCAL_VARIABLE})`) : firstTarget,
+		}
+	}
+
+	/**
+	 * The button's own copy of which key it drives. Everything else on the button
+	 * reads it, so switching the button to another key is one edit, and dropping the
+	 * same preset onto several buttons only differs by this value.
+	 */
+	private keyLocalVariable(mode: 'index' | 'target'): CompanionSimplePresetLocalVariable {
+		return {
+			variableName: KEY_LOCAL_VARIABLE,
+			variableType: 'simple' as const,
+			headline: mode === 'index' ? 'Which key this button drives, by index' : 'Which key this button drives',
+			startupValue: mode === 'index' ? 0 : (this.keys[0] ? this.keyTargetToken(this.keys[0]) : ''),
 		}
 	}
 
