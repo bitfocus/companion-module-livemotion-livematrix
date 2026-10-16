@@ -21,7 +21,8 @@
 	"scripts": {
 		"build": "rimraf dist && tsc --project tsconfig.build.json",
 		"watch": "tsc --project tsconfig.build.json --watch",
-		"package": "npm run build && companion-module-build"
+		"package": "npm run build && companion-module-build",
+		"test": "vitest run"
 	},
 	"engines": {
 		"node": "^22.20 || ^26.5"
@@ -40,7 +41,8 @@
 		"prettier": "^3.7.4",
 		"rimraf": "^6.1.2",
 		"typescript": "~5.9.3",
-		"typescript-eslint": "^8.51.0"
+		"typescript-eslint": "^8.51.0",
+		"vitest": "^5.0.2"
 	},
 	"prettier": "@companion-module/tools/.prettierrc.json"
 }

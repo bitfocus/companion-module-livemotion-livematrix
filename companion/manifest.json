@@ -3,7 +3,7 @@
   "id": "livematrix",
   "name": "LiveMatrix",
   "shortname": "livematrix",
-  "description": "Control LiveMatrix talk, listen, and global keys over the existing websocket protocol",
+  "description": "Control LiveMatrix talk, listen and mic mute over the existing websocket protocol",
   "version": "0.1.0",
   "license": "UNLICENSED",
   "repository": "https://github.com/yannisgu/companion-module-livematrix.git",
