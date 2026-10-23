@@ -44,6 +44,11 @@ export const TALK = hex('#E5484D')
 export const LISTEN = hex('#3DD68C')
 /** Amber: the mic is muted. */
 export const WARN = hex('#FFB020')
+/**
+ * Amber too, for incoming intent: someone listening to us, or audio arriving.
+ * Which half the stripe sits on says which one it means.
+ */
+export const INCOMING = hex('#FFB300')
 
 /** A half that is on: its colour at 45% over the card. Held and latched fill the same. */
 export const TALK_ON = blend(TALK, 0.45, SURFACE)
@@ -66,3 +71,10 @@ export const MIC_MUTED_FILL = blend(WARN, 0.2, SURFACE)
  */
 export const TALK_REST = blend(TALK, 0.7, TEXT)
 export const LISTEN_REST = blend(LISTEN, 0.7, TEXT)
+
+/**
+ * The listen stripe once audio stops: amber pulled a quarter of the way to
+ * muted grey, at 40% over a half at rest, so "audio recently" never reads as
+ * "audio now".
+ */
+export const INCOMING_TRAIL = blend(blend(INCOMING, 0.75, TEXT_MUTED), 0.4, FILL)

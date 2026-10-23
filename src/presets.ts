@@ -24,6 +24,8 @@ import {
 	TEXT_DISABLED,
 	TEXT_FAINT,
 	TEXT_MUTED,
+	INCOMING,
+	INCOMING_TRAIL,
 	WARN,
 } from './brand.js'
 import type { LiveMatrixManifest } from './config.js'
@@ -38,6 +40,8 @@ import { keyTargetToken, type KeyConfig, type KeyField } from './protocol.js'
  */
 const REST_BORDER_WIDTH = 3
 const RING_WIDTH = 5
+/** The amber incoming stripe on a half's outer edge: wider than the ring it covers. */
+const INCOMING_STRIPE_WIDTH = 8
 
 /**
  * Text sizes, as a percentage of the button.
@@ -432,6 +436,46 @@ class PresetBuilder {
 	}
 
 	/**
+	 * The amber stripe on a half's outer edge, as the app draws it: on the talk
+	 * half while someone the key reaches is listening to us, on the listen half
+	 * while their audio is arriving. Drawn after the ring, so on the outer edge
+	 * "someone is reaching you" wins over "this stays on".
+	 */
+	private incomingStripeElement(mode: KeyField) {
+		return {
+			id: `${mode}-incoming`,
+			type: 'box' as const,
+			name: mode === 'talk' ? 'Listening to you' : 'Audio arriving',
+			x: mode === 'talk' ? 100 - INCOMING_STRIPE_WIDTH : 0,
+			y: 0,
+			width: INCOMING_STRIPE_WIDTH,
+			height: 100,
+			color: INCOMING,
+			enabled: false,
+		}
+	}
+
+	/**
+	 * The feedbacks that light a half's incoming stripe. The listen stripe
+	 * trails for a minute after audio stops, muted towards grey so it never
+	 * reads as audio now.
+	 */
+	private incomingStripeFeedbacks(mode: KeyField, keyOptions: ReturnType<typeof presetKeyOptions>) {
+		const elementId = `${mode}-incoming`
+		const lit = (color: number) => [
+			{ elementId, elementProperty: 'enabled', override: overrideValue(true) },
+			{ elementId, elementProperty: 'color', override: overrideValue(color) },
+		]
+		if (mode === 'talk') {
+			return [{ feedbackId: 'listening_to_me' as const, options: keyOptions, styleOverrides: lit(INCOMING) }]
+		}
+		return [
+			{ feedbackId: 'audio_recent' as const, options: keyOptions, styleOverrides: lit(INCOMING_TRAIL) },
+			{ feedbackId: 'audio_arriving' as const, options: keyOptions, styleOverrides: lit(INCOMING) },
+		]
+	}
+
+	/**
 	 * The latch ring: the half's own colour, at full strength, around it. In the
 	 * app this is the one place talk red and listen green are drawn as a border,
 	 * so a coloured frame always means latched.
@@ -481,6 +525,7 @@ class PresetBuilder {
 				},
 				this.restBorderElement(mode),
 				this.latchRingElement(mode, 0, 0, 100, 100),
+				this.incomingStripeElement(mode),
 				...(showLevel ? [...this.levelBarElements(levelY), this.selectedBarBorderElement(levelY)] : []),
 				// Last, so the name is drawn over everything else on the key.
 				...this.labelElements(showLevel ? 42 : 50),
@@ -517,6 +562,7 @@ class PresetBuilder {
 					options: keyOptions,
 					styleOverrides: [{ elementId: `${mode}-ring`, elementProperty: 'enabled', override: overrideValue(true) }],
 				},
+				...this.incomingStripeFeedbacks(mode, keyOptions),
 				...(showLevel
 					? [
 							{
@@ -599,6 +645,8 @@ class PresetBuilder {
 				...this.halfRestBorderElements('talk'),
 				...this.halfLatchRingElements('listen'),
 				...this.halfLatchRingElements('talk'),
+				this.incomingStripeElement('listen'),
+				this.incomingStripeElement('talk'),
 				...this.levelBarElements(levelY),
 				this.selectedBarBorderElement(levelY),
 				// Last, so the name is drawn over everything else on the key.
@@ -648,6 +696,8 @@ class PresetBuilder {
 						override: overrideValue(true),
 					})),
 				},
+				...this.incomingStripeFeedbacks('listen', keyOptions),
+				...this.incomingStripeFeedbacks('talk', keyOptions),
 				{
 					feedbackId: 'key_selected' as const,
 					options: keyOptions,

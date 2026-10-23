@@ -15,6 +15,8 @@ local control API exposed by a logged-in LiveMatrix desktop client.
 - Key buttons drawn like the client app's key cards, in its colours: the name
   and listen level on top, L and T halves underneath that fill green and red
   while on and get a ring while latched
+- An amber stripe on a key's talk half while someone it reaches is listening to
+  you, and on its listen half while their audio is arriving, as in the app
 - A key selection, so one rotary or a pair of volume keys can trim whichever
   key is being held down
 - Mute, unmute and toggle-mute actions for the user's one microphone, with a

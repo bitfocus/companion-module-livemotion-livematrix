@@ -16,7 +16,8 @@ import {
 	type LiveMatrixManifest,
 	type LiveMatrixSecrets,
 } from './config.js'
-import { ACCENT_HIGH, LISTEN_ON, MIC_MUTED_FILL, NAME_OFFLINE, TALK_ON, TEXT, WARN } from './brand.js'
+import { ActivityStore } from './activity.js'
+import { ACCENT_HIGH, INCOMING, LISTEN_ON, MIC_MUTED_FILL, NAME_OFFLINE, TALK_ON, TEXT, WARN } from './brand.js'
 import { LiveMatrixConnection } from './connection.js'
 import { KeyStateStore } from './key-state.js'
 import {
@@ -46,6 +47,7 @@ import {
 	keyRef,
 	keyTargetToken,
 	readMicState,
+	type ActivityUpdateMessage,
 	type DeviceInfo,
 	type DevicesUpdateMessage,
 	type ErrorMessage,
@@ -156,6 +158,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	private availableUsers: UserInfo[] = []
 	private connectedUsers = new Set<string>()
 	private keyState = new KeyStateStore()
+	private activity = new ActivityStore()
+	/** Puts out the listen stripe's trail when it runs out. */
+	private activityTrailTimer: NodeJS.Timeout | undefined
 	private mic: MicState = createEmptyMicState()
 	/** This user's devices, as the server last listed them. Includes this panel. */
 	private devices: DeviceInfo[] = []
@@ -213,6 +218,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	async destroy(): Promise<void> {
 		this.clearHolds()
 		this.stopAllLevelRepeats()
+		clearTimeout(this.activityTrailTimer)
 		await this.disconnect()
 	}
 
@@ -251,6 +257,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				message: (message) => this.handleMessage(message),
 				close: (reconnecting) => {
 					this.clearHolds()
+					this.clearActivity()
 					this.pushVariableValues()
 					if (!reconnecting) return
 					if (this.retryReason) this.updateStatus(InstanceStatus.ConnectionFailure, this.retryReason)
@@ -319,6 +326,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			case 'devices_update':
 				this.handleDevicesUpdate(message as unknown as DevicesUpdateMessage)
 				break
+			case 'activity_update':
+				this.handleActivityUpdate(message as unknown as ActivityUpdateMessage)
+				break
 			case 'error':
 				this.handleServerError(message as unknown as ErrorMessage)
 				break
@@ -333,6 +343,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.displayName = message.display_name
 		this.availableUsers = message.available_users ?? []
 		this.connectedUsers = new Set(this.availableUsers.filter((user) => user.is_connected).map((user) => user.id))
+		this.activity.setGroups(message.groups ?? [])
 		this.applyKeys(message.keys ?? [])
 		// The server advertises its own lease so client and server cannot drift
 		// apart on how often a held key has to be restated.
@@ -404,6 +415,38 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.devices = message.devices ?? []
 		// The move action lists the devices by name, so its choices follow.
 		this.setActionDefinitions(this.getActionDefinitions())
+	}
+
+	private handleActivityUpdate(message: ActivityUpdateMessage): void {
+		this.activity.apply(message, Date.now())
+		this.scheduleActivityTrail()
+		this.checkActivityFeedbacks()
+	}
+
+	/** Wake when the next listen stripe's trail runs out, to put it out. */
+	private scheduleActivityTrail(): void {
+		clearTimeout(this.activityTrailTimer)
+		this.activityTrailTimer = undefined
+		const now = Date.now()
+		const next = this.activity.nextTrailExpiry(now)
+		if (next === undefined) return
+		this.activityTrailTimer = setTimeout(() => {
+			this.activityTrailTimer = undefined
+			this.checkActivityFeedbacks()
+			this.scheduleActivityTrail()
+		}, next - now)
+	}
+
+	/** A lost connection puts every stripe out at once, trail and all, as the app does. */
+	private clearActivity(): void {
+		clearTimeout(this.activityTrailTimer)
+		this.activityTrailTimer = undefined
+		this.activity.clear()
+		this.checkActivityFeedbacks()
+	}
+
+	private checkActivityFeedbacks(): void {
+		this.checkFeedbacks('listening_to_me', 'audio_arriving', 'audio_recent')
 	}
 
 	private handleServerError(message: ErrorMessage): void {
@@ -819,6 +862,45 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 				callback: async (feedback) => {
 					const key = this.resolveKey(feedback.options)
 					return key ? !this.isKeyUserConnected(key) : false
+				},
+			},
+			listening_to_me: {
+				type: 'boolean',
+				name: 'Listening to you',
+				description: 'Someone this key reaches is listening to you. A group key counts its members.',
+				defaultStyle: {
+					color: INCOMING,
+				},
+				options: getKeySelectorOptions(this.keys),
+				callback: async (feedback) => {
+					const key = this.resolveKey(feedback.options)
+					return key ? this.activity.isListeningToMe(key) : false
+				},
+			},
+			audio_arriving: {
+				type: 'boolean',
+				name: 'Audio arriving',
+				description: 'Audio from what this key points at is reaching you right now, whether or not you listen',
+				defaultStyle: {
+					color: INCOMING,
+				},
+				options: getKeySelectorOptions(this.keys),
+				callback: async (feedback) => {
+					const key = this.resolveKey(feedback.options)
+					return key ? this.activity.isAudioArriving(key) : false
+				},
+			},
+			audio_recent: {
+				type: 'boolean',
+				name: 'Audio arrived recently',
+				description: 'Audio from what this key points at stopped within the last minute',
+				defaultStyle: {
+					color: INCOMING,
+				},
+				options: getKeySelectorOptions(this.keys),
+				callback: async (feedback) => {
+					const key = this.resolveKey(feedback.options)
+					return key ? this.activity.isAudioTrailing(key, Date.now()) : false
 				},
 			},
 			mic_muted: {
@@ -1570,6 +1652,9 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		this.availableUsers = []
 		this.connectedUsers.clear()
 		this.keyState.reset()
+		clearTimeout(this.activityTrailTimer)
+		this.activityTrailTimer = undefined
+		this.activity = new ActivityStore()
 		this.retryReason = undefined
 		this.lastTapAt.clear()
 		this.talkLatchBeforeTap.clear()

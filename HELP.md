@@ -23,6 +23,12 @@ Microphone:
 
 Keys can point at users, party lines, feeds (listen-only lines) and groups (talk-only).
 
+Incoming activity, as the client app shows it on its key cards:
+
+- Feedback `Listening to you`: someone the key reaches is listening to you. A group key counts its members. In client mode this needs a LiveMatrix app recent enough to list groups on its control API; with an older one a group key never lights.
+- Feedback `Audio arriving`: audio from the key's user or line is reaching you right now, whether or not you listen. `Audio arrived recently` follows it for a minute after it stops.
+- The key presets draw these as an amber stripe on the outer edge of the half they belong to: the talk half for `Listening to you`, the listen half for audio, dimmer while it trails. A lost connection puts every stripe out.
+
 Listen level actions and variables use dB, from `-100 dB` (silence) to `+10 dB`.
 
 Selected key:

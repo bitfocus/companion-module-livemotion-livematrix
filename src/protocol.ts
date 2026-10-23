@@ -54,6 +54,13 @@ export interface MomentaryHold {
 	listen: boolean
 }
 
+/** A group of users that one group key talks to. */
+export interface GroupInfo {
+	id: string
+	name: string
+	member_ids: string[]
+}
+
 export interface LoginSuccessMessage {
 	type: 'login_success'
 	user_id: string
@@ -61,6 +68,8 @@ export interface LoginSuccessMessage {
 	device_id: string
 	keys: KeyConfig[]
 	available_users: UserInfo[]
+	/** Absent from client apps older than group membership on the control API. */
+	groups?: GroupInfo[]
 	/** How often a held key has to be restated, and how long it survives without that. */
 	momentary_heartbeat_interval_ms?: number
 	momentary_timeout_ms?: number
@@ -91,6 +100,27 @@ export interface StateUpdateMessage {
 	state: UserState
 	/** The same snapshot with every held press removed. */
 	latched?: UserState
+}
+
+/** A user named in an activity snapshot. */
+export interface PeerRef {
+	user_id: string
+	display_name: string
+}
+
+/**
+ * Who is keyed towards this user, and whose audio is reaching them. A full
+ * snapshot every time, sent only when it changes. Only the fields this module
+ * draws are listed.
+ */
+export interface ActivityUpdateMessage {
+	type: 'activity_update'
+	/** Users listening to me. */
+	listening_to_me?: PeerRef[]
+	/** Users whose audio is reaching me right now: routed to me and above the speech threshold. */
+	audible_users?: string[]
+	/** Party lines carrying audible audio to me right now. */
+	audible_party_lines?: string[]
 }
 
 export interface KeysChangedMessage {
