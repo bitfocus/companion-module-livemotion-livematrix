@@ -167,6 +167,22 @@ export function readUserState(raw: Partial<UserState> | undefined): UserState {
 	}
 }
 
+/** One of this user's devices, as `devices_update` lists them. */
+export interface DeviceInfo {
+	device_id: string
+	device_name: string
+	device_model: string
+	connected_at?: string
+}
+
+export interface DevicesUpdateMessage {
+	type: 'devices_update'
+	devices?: DeviceInfo[]
+}
+
+/** The model a Companion panel gives itself. A panel never holds the mic. */
+export const COMPANION_DEVICE_MODEL = 'companion'
+
 export function createEmptyMicState(): MicState {
 	return {
 		device_id: null,

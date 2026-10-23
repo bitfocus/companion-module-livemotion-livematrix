@@ -110,6 +110,31 @@ export function getPressBehaviourOption() {
 	}
 }
 
+/**
+ * Hold the key to make it the selected key while it is held, so the volume
+ * controls act on it. Let go and the selection goes back to what it was.
+ */
+export function getHoldSelectsOption(defaultValue: boolean) {
+	return {
+		type: 'checkbox' as const,
+		id: 'hold_selects',
+		label: 'Holding selects this key',
+		tooltip:
+			'While the key is held down it is the selected key, so the volume controls act on it. Letting go hands the selection back.',
+		default: defaultValue,
+	}
+}
+
+/** Make the key the selected one on every press, and leave it selected afterwards. */
+export function getAlsoSelectOption() {
+	return {
+		type: 'checkbox' as const,
+		id: 'also_select',
+		label: 'Pressing selects this key and keeps it selected',
+		default: false,
+	}
+}
+
 export function getSetModeOption(id: string) {
 	return {
 		type: 'dropdown' as const,

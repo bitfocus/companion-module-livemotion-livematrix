@@ -52,10 +52,10 @@ export class InstanceBase {
 		return this.statuses.at(-1)
 	}
 
-	async runAction(actionId: string, options: Record<string, unknown> = {}): Promise<void> {
+	async runAction(actionId: string, options: Record<string, unknown> = {}, controlId = 'test'): Promise<void> {
 		const definition = this.actions[actionId]
 		if (!definition) throw new Error(`No action ${actionId}`)
-		await definition.callback({ id: `test-${actionId}`, actionId, controlId: 'test', options })
+		await definition.callback({ id: `test-${actionId}`, actionId, controlId, options })
 	}
 	async runFeedback(feedbackId: string, options: Record<string, unknown> = {}): Promise<unknown> {
 		const definition = this.feedbacks[feedbackId]

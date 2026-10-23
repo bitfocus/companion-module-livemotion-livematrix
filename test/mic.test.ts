@@ -4,6 +4,7 @@ import { FakeLiveMatrix, INITIAL_MIC, startInstance, waitFor, type Message } fro
 vi.mock('@companion-module/base', () => import('./support/companion-base.js'))
 
 const { LiveMatrixInstance } = await import('../src/index.js')
+const { MIC_MUTED_FILL } = await import('../src/brand.js')
 
 type MicPush = {
 	device_id?: string | null
@@ -12,8 +13,6 @@ type MicPush = {
 	muted?: boolean
 	open?: boolean
 }
-
-const RED = (255 << 16) | 0
 
 for (const mode of ['server', 'client'] as const) {
 	describe(`mic mute over the ${mode} connection`, () => {
@@ -77,16 +76,60 @@ for (const mode of ['server', 'client'] as const) {
 			expect(Object.keys(instance.variableDefinitions)).toEqual(
 				expect.arrayContaining(['mic_muted', 'mic_open', 'mic_device', 'mic_holder_online', 'mic_error']),
 			)
-			expect(instance.feedbacks.mic_muted.defaultStyle.bgcolor).toBe(RED)
+			expect(instance.feedbacks.mic_muted.defaultStyle.bgcolor).toBe(MIC_MUTED_FILL)
 
 			const preset = instance.presets.mic_button
-			expect(preset.style.text).toBe('MIC\n$(livematrix:mic_device)')
 			expect(preset.steps[0].down).toEqual([{ actionId: 'mic_toggle', options: {} }])
+			// A mic icon, swapped for a struck-through one on amber while muted.
+			const elements = Object.fromEntries(preset.elements.map((element: any) => [element.id, element]))
+			expect(elements['mic-live']).toMatchObject({ type: 'image', enabled: true })
+			expect(elements['mic-muted']).toMatchObject({ type: 'image', enabled: false })
+			expect(elements['mic-live'].base64Image).toMatch(/^data:image\/png;base64,/)
+			expect(elements['mic-muted'].base64Image).toMatch(/^data:image\/png;base64,/)
+			// The device name is there to switch on, but off by default.
+			expect(elements.device).toMatchObject({ type: 'text', enabled: false })
 			expect(preset.feedbacks).toEqual([
-				expect.objectContaining({ feedbackId: 'mic_muted', style: expect.objectContaining({ bgcolor: RED }) }),
+				expect.objectContaining({
+					feedbackId: 'mic_muted',
+					styleOverrides: expect.arrayContaining([
+						expect.objectContaining({ elementId: 'muted-fill', elementProperty: 'enabled' }),
+						expect.objectContaining({ elementId: 'mic-muted', elementProperty: 'enabled' }),
+					]),
+				}),
 			])
 			const sections = instance.presetStructure.filter((section: any) => section.definitions.includes('mic_button'))
 			expect(sections).toHaveLength(1)
+		})
+
+		it('moves the mic to another device, in server mode only', async () => {
+			fake.push({
+				type: 'devices_update',
+				devices: [
+					{ device_id: 'desk-1', device_name: 'Desk', device_model: 'macOS' },
+					{ device_id: 'companion-conn-1', device_name: 'Companion', device_model: 'companion' },
+					{ device_id: 'laptop-1', device_name: 'Laptop', device_model: 'Windows' },
+				],
+			})
+			await waitFor(() => instance.actions.mic_move.options[0].choices.length === 3, 'the device list')
+			// Companion panels have no mic, so they are not offered.
+			expect(instance.actions.mic_move.options[0].choices.map((choice: any) => choice.id)).toEqual([
+				'next',
+				'desk-1',
+				'laptop-1',
+			])
+
+			await instance.runAction('mic_move', { device: 'next' })
+			await instance.runAction('mic_move', { device: 'desk-1' })
+			await new Promise((resolve) => setTimeout(resolve, 50))
+			if (mode === 'server') {
+				// Desk holds the mic, so next is the laptop.
+				expect(fake.sent('claim_mic')).toEqual([
+					{ type: 'claim_mic', device_id: 'laptop-1' },
+					{ type: 'claim_mic', device_id: 'desk-1' },
+				])
+			} else {
+				expect(fake.sent('claim_mic')).toEqual([])
+			}
 		})
 
 		it('mutes and unmutes', async () => {

@@ -70,6 +70,51 @@ describe('keys of every kind', () => {
 		await waitFor(() => instance.checkedFeedbacks.filter((id: string) => id === '*').length > before, 'the state')
 	}
 
+	it('redraws what follows the selected key when the selection moves', async () => {
+		const selected = { selection_mode: 'selected' }
+		instance.checkedFeedbacks.length = 0
+		await instance.runAction('select_key', byTarget(LINE_KEY))
+
+		// The volume keys read the name and level through value feedbacks, not
+		// through key_selected, so every feedback has to be checked again.
+		expect(instance.checkedFeedbacks).toContain('*')
+		expect(await instance.runFeedback('key_name', selected)).toBe('Main')
+
+		instance.checkedFeedbacks.length = 0
+		await instance.runAction('listen_level_delta', { ...selected, delta_db: -3 })
+		expect(instance.checkedFeedbacks).toContain('key_listen_level_db')
+	})
+
+	it('keeps stepping a held volume key until it is let go', async () => {
+		const options = { ...byTarget(LINE_KEY), delta_db: 1 }
+		const levels = () => fake.sent('set_key_level').map((message) => Math.round(20 * Math.log10(message.level)))
+
+		await instance.runAction('listen_level_hold', options)
+		await waitFor(() => levels().length > 0, 'the first step')
+		expect(levels()).toEqual([1])
+
+		await new Promise((resolve) => setTimeout(resolve, 750))
+		await instance.runAction('listen_level_hold_stop')
+		await new Promise((resolve) => setTimeout(resolve, 30))
+		const held = levels()
+		// One step on the press, then one every 100 ms after the 400 ms wait.
+		expect(held.length).toBeGreaterThanOrEqual(3)
+		expect(held).toEqual(held.map((_, index) => index + 1))
+
+		await new Promise((resolve) => setTimeout(resolve, 300))
+		expect(levels()).toEqual(held)
+	})
+
+	it('stops a held volume key at the top of the range', async () => {
+		await instance.runAction('listen_level', { ...byTarget(LINE_KEY), level: 9 })
+		await instance.runAction('listen_level_hold', { ...byTarget(LINE_KEY), delta_db: 1 })
+		await new Promise((resolve) => setTimeout(resolve, 700))
+		const sent = fake.sent('set_key_level').length
+		await new Promise((resolve) => setTimeout(resolve, 300))
+		expect(fake.sent('set_key_level').length).toBe(sent)
+		expect(await instance.runFeedback('key_listen_level_db', byTarget(LINE_KEY))).toBe(10)
+	})
+
 	it('reads a feed from the line maps', async () => {
 		await pushState({
 			party_line_listen_active: { 'line-program': true },

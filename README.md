@@ -12,11 +12,13 @@ local control API exposed by a logged-in LiveMatrix desktop client.
 ## What it gives you
 
 - Talk and listen keys with the same momentary/latching behaviour as the client
-- A layered key button: listen fills the left half green, talk the right half
-  red, with the listen level along the bottom
-- A key selection, so one rotary can trim whichever key was last pressed
+- Key buttons drawn like the client app's key cards, in its colours: the name
+  and listen level on top, L and T halves underneath that fill green and red
+  while on and get a ring while latched
+- A key selection, so one rotary or a pair of volume keys can trim whichever
+  key is being held down
 - Mute, unmute and toggle-mute actions for the user's one microphone, with a
-  `mic_button` preset that shows the device holding the mic and turns red while
+  `mic_button` preset that shows the device holding the mic and turns amber while
   it is muted. Mute state lives on the server, so the button follows changes
   made in the app and the app follows changes made here.
 - Variables and feedbacks addressed by index, by target, or by selected key
