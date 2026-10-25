@@ -171,23 +171,23 @@ class PresetBuilder {
 		const structure: CompanionPresetSection<LiveMatrixManifest>[] = [
 			{
 				id: 'keys',
-				name: 'Intercom Keys',
+				name: 'Intercom keys',
 				description: 'Talk and listen on one button. The `key` variable picks which key it drives.',
 				definitions: this.keyPresetGroups('keys', 'key_by_target', 'key_by_index'),
 			},
 			{
 				id: 'talk',
-				name: 'Talk Keys',
+				name: 'Talk keys',
 				definitions: this.keyPresetGroups('talk', 'talk_by_target', 'talk_by_index'),
 			},
 			{
 				id: 'listen',
-				name: 'Listen Keys',
+				name: 'Listen keys',
 				definitions: this.keyPresetGroups('listen', 'listen_by_target', 'listen_by_index'),
 			},
 			{
 				id: 'general',
-				name: 'Microphone and Selection',
+				name: 'Microphone and selection',
 				definitions: ['mic_button', 'selected_volume', 'selected_volume_up', 'selected_volume_down'],
 			},
 		]
@@ -224,7 +224,7 @@ class PresetBuilder {
 				type: 'template',
 				id: `${idPrefix}-index`,
 				name: 'By index',
-				description: 'Follows whatever key is in that position, whichever key that turns out to be.',
+				description: 'Follows whatever key is in that position of the key list.',
 				presetId: indexPresetId,
 				templateVariableName: KEY_LOCAL_VARIABLE,
 				templateValues: this.keys.map((key, index) => ({

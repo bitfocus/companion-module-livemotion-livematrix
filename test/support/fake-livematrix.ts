@@ -79,7 +79,7 @@ export interface FakeOptions {
 }
 
 /**
- * Plays the LiveMatrix server (`/ws`, answers a login and pings) or the app's
+ * Plays the livematrix server (`/ws`, answers a login and pings) or the app's
  * local control API (`/`, greets straight away with no login, ignores what it
  * does not know). Both speak the same protocol after that, so one fake covers
  * both.

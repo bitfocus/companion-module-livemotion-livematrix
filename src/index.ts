@@ -688,7 +688,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			mic_move: {
 				name: 'Move microphone to device',
 				description:
-					"Hand this user's mic to another of their devices, unmuted. Needs a direct server connection: a client app's control API cannot move the mic.",
+					"Hand this user's mic to another of their devices, unmuted. This needs a direct server connection, because a client app's control API cannot move the mic.",
 				options: [
 					{
 						type: 'dropdown' as const,
@@ -925,7 +925,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 			mic_live: {
 				type: 'boolean',
 				name: 'Microphone live',
-				description: 'On while audio is going out: the mic is unmuted, or muted with a talk key held through the mute',
+				description:
+					'On while audio is going out, either because the mic is unmuted or because a talk key is held through the mute',
 				defaultStyle: {
 					bgcolor: LISTEN_ON,
 					color: TEXT,
@@ -1487,7 +1488,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 	private onMicMove(target: string): void {
 		if (this.config.connection_mode !== 'server') {
-			this.log('warn', 'Moving the mic needs a direct server connection; the client control API cannot do it')
+			this.log('warn', 'Moving the mic needs a direct server connection, because the client control API cannot move it')
 			return
 		}
 

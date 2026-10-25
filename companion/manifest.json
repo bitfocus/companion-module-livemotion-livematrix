@@ -4,7 +4,7 @@
 	"id": "livemotion-livematrix",
 	"name": "livemotion-livematrix",
 	"shortname": "livematrix",
-	"description": "Control LiveMatrix talk, listen and mic mute over the existing websocket protocol",
+	"description": "Control livematrix talk and listen keys and the microphone mute",
 	"version": "0.1.0",
 	"license": "MIT",
 	"repository": "git+https://github.com/bitfocus/companion-module-livemotion-livematrix.git",
@@ -23,6 +23,6 @@
 	},
 	"legacyIds": ["livematrix"],
 	"manufacturer": "LiveMotion",
-	"products": ["LiveMatrix"],
+	"products": ["livematrix"],
 	"keywords": ["Intercom", "Audio", "Broadcast", "Talkback"]
 }
