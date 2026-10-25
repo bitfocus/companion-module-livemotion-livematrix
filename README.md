@@ -31,7 +31,7 @@ See [HELP.md](./companion/HELP.md) for the actions, feedbacks and presets, and
 
 ## Requirements
 
-- Companion 5.0 or newer, because the module uses module API 2.x
+- Companion 5.1 or newer, because the module uses module API 2.2
 - Node 26.5+ to build
 
 ## Development
