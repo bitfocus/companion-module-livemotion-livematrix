@@ -10,7 +10,6 @@ export type LiveMatrixConfig = {
 	server_tls: boolean
 	client_host: string
 	client_port: number
-	client_tls: boolean
 }
 
 export type LiveMatrixSecrets = {
@@ -111,18 +110,10 @@ export function getConfigFields(): SomeCompanionConfigField[] {
 			type: 'number',
 			id: 'client_port',
 			label: 'Control API port',
-			width: 4,
+			width: 6,
 			default: DEFAULT_CLIENT_PORT,
 			min: 1,
 			max: 65535,
-			isVisibleExpression: "$(options:connection_mode) == 'client'",
-		},
-		{
-			type: 'checkbox',
-			id: 'client_tls',
-			label: 'Use TLS',
-			width: 2,
-			default: false,
 			isVisibleExpression: "$(options:connection_mode) == 'client'",
 		},
 	]
@@ -147,8 +138,8 @@ export function buildWebSocketUrl(config: LiveMatrixConfig): string {
 		return `${scheme}://${host}:${port}/ws`
 	}
 
-	const scheme = config.client_tls ? 'wss' : 'ws'
+	// The client app's control API speaks plain WebSocket only.
 	const host = config.client_host?.trim() || DEFAULT_CLIENT_HOST
 	const port = config.client_port ?? DEFAULT_CLIENT_PORT
-	return `${scheme}://${host}:${port}`
+	return `ws://${host}:${port}`
 }

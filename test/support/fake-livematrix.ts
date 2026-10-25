@@ -174,7 +174,6 @@ export function configFor(mode: Mode, port: number) {
 				server_tls: false,
 				client_host: '',
 				client_port: 0,
-				client_tls: false,
 			}
 		: {
 				connection_mode: 'client',
@@ -184,7 +183,6 @@ export function configFor(mode: Mode, port: number) {
 				server_tls: false,
 				client_host: '127.0.0.1',
 				client_port: port,
-				client_tls: false,
 			}
 }
 

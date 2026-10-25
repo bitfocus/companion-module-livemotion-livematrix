@@ -32,7 +32,7 @@ See [HELP.md](./companion/HELP.md) for the actions, feedbacks and presets, and
 ## Requirements
 
 - Companion 5.0 or newer, because the module uses module API 2.x
-- Node 22.20+ or 26.5+ to build
+- Node 26.5+ to build
 
 ## Development
 
