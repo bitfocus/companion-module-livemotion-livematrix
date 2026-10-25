@@ -37,7 +37,7 @@ The `Microphone mute` preset is in the `Microphone and selection` section. It sh
 
 These feedbacks match the stripes the client app draws on its key cards.
 
-- `Listening to you` is on while someone the key reaches is listening to you. A group key counts its members. In client mode, a group key only lights with a client app new enough to list groups on its control API.
+- `Listening to you` is on while someone the key reaches is listening to you. A group key counts its members.
 - `Audio arriving` is on while audio from the key's user or line reaches you, whether or not you listen to it.
 - `Audio arrived recently` stays on for one minute after that audio stops.
 
