@@ -1,4 +1,4 @@
-# companion-module-livematrix
+# companion-module-livemotion-livematrix
 
 A [Bitfocus Companion](https://bitfocus.io/companion) module for controlling
 [LiveMatrix](https://github.com/yannisgu/livematrix) talk and listen keys, and
@@ -33,8 +33,8 @@ local control API exposed by a logged-in LiveMatrix desktop client.
 ## Development
 
 ```bash
-npm install
-npm run build
+yarn install
+yarn build
 ```
 
 Point Companion's developer modules path at the folder that contains this
@@ -46,7 +46,7 @@ into another checkout will fail to load.
 ## Tests
 
 ```bash
-npm test
+yarn test
 ```
 
 The suite runs the module against a fake LiveMatrix WebSocket endpoint
@@ -67,5 +67,5 @@ mocked out.
 ## Packaging
 
 ```bash
-npm run package
+yarn package
 ```

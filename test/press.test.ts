@@ -9,7 +9,7 @@ import {
 	type Message,
 } from './support/fake-livematrix.js'
 
-vi.mock('@companion-module/base', () => import('./support/companion-base.js'))
+vi.mock('@companion-module/base', async () => import('./support/companion-base.js'))
 
 const { LiveMatrixInstance } = await import('../src/index.js')
 
@@ -35,7 +35,7 @@ type Key = typeof USER_KEY
 type Layers = { latched: boolean; momentary: boolean }
 
 const byTarget = (key: Key) => ({ selection_mode: 'target', key_target: `${key.target_type}:${key.target_id}` })
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const sleep = async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
  * Both layers of one half of a key, as the server would hold them after every

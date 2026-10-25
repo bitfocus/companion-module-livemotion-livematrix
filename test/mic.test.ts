@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeLiveMatrix, INITIAL_MIC, startInstance, waitFor, type Message } from './support/fake-livematrix.js'
 
-vi.mock('@companion-module/base', () => import('./support/companion-base.js'))
+vi.mock('@companion-module/base', async () => import('./support/companion-base.js'))
 
 const { LiveMatrixInstance } = await import('../src/index.js')
 const { MIC_MUTED_FILL } = await import('../src/brand.js')

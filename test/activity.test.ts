@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeLiveMatrix, LOGIN_SUCCESS, USER_KEY, startInstance, waitFor } from './support/fake-livematrix.js'
 
-vi.mock('@companion-module/base', () => import('./support/companion-base.js'))
+vi.mock('@companion-module/base', async () => import('./support/companion-base.js'))
 
 const { LiveMatrixInstance } = await import('../src/index.js')
 const { getPresetDefinitions } = await import('../src/presets.js')
@@ -105,7 +105,7 @@ describe.each(['server', 'client'] as const)('incoming activity over the %s conn
 	})
 
 	it('draws the stripe on the outer edge of each half in the key presets', () => {
-		const { presets } = getPresetDefinitions([USER_KEY as any])
+		const { presets } = getPresetDefinitions([USER_KEY])
 		const ids = (preset: any) => preset.feedbacks.map((feedback: any) => feedback.feedbackId)
 		expect(ids(presets['key_by_target'])).toEqual(
 			expect.arrayContaining(['listening_to_me', 'audio_arriving', 'audio_recent']),

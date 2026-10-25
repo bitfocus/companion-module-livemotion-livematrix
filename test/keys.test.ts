@@ -8,7 +8,7 @@ import {
 	waitFor,
 } from './support/fake-livematrix.js'
 
-vi.mock('@companion-module/base', () => import('./support/companion-base.js'))
+vi.mock('@companion-module/base', async () => import('./support/companion-base.js'))
 
 const { LiveMatrixInstance } = await import('../src/index.js')
 

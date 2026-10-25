@@ -1,4 +1,7 @@
 import type {
+	CompanionInputFieldCheckbox,
+	CompanionInputFieldDropdown,
+	CompanionInputFieldNumber,
 	CompanionOptionValues,
 	CompanionSimplePresetLocalVariable,
 	DropdownChoice,
@@ -44,7 +47,7 @@ export function expr<T>(expression: string): T {
  * Wrap a literal for a feedback style override. Companion drops overrides whose value
  * is not in expression-or-value form, which silently disables the whole feedback.
  */
-export function overrideValue<T extends JsonValue>(value: T) {
+export function overrideValue<T extends JsonValue>(value: T): { isExpression: false; value: T } {
 	return { isExpression: false as const, value }
 }
 
@@ -59,7 +62,9 @@ export function getKeyChoices(keys: KeyConfig[]): DropdownChoice[] {
 	}))
 }
 
-export function getKeySelectorOptions(keys: KeyConfig[]) {
+export function getKeySelectorOptions(
+	keys: KeyConfig[],
+): [CompanionInputFieldDropdown, CompanionInputFieldNumber, CompanionInputFieldDropdown] {
 	return [
 		{
 			type: 'dropdown' as const,
@@ -100,7 +105,7 @@ export function getKeySelectorOptions(keys: KeyConfig[]) {
 	]
 }
 
-export function getPressBehaviourOption() {
+export function getPressBehaviourOption(): CompanionInputFieldDropdown {
 	return {
 		type: 'dropdown' as const,
 		id: 'press_behaviour',
@@ -114,7 +119,7 @@ export function getPressBehaviourOption() {
  * Hold the key to make it the selected key while it is held, so the volume
  * controls act on it. Let go and the selection goes back to what it was.
  */
-export function getHoldSelectsOption(defaultValue: boolean) {
+export function getHoldSelectsOption(defaultValue: boolean): CompanionInputFieldCheckbox {
 	return {
 		type: 'checkbox' as const,
 		id: 'hold_selects',
@@ -126,7 +131,7 @@ export function getHoldSelectsOption(defaultValue: boolean) {
 }
 
 /** Make the key the selected one on every press, and leave it selected afterwards. */
-export function getAlsoSelectOption() {
+export function getAlsoSelectOption(): CompanionInputFieldCheckbox {
 	return {
 		type: 'checkbox' as const,
 		id: 'also_select',
@@ -135,7 +140,7 @@ export function getAlsoSelectOption() {
 	}
 }
 
-export function getSetModeOption(id: string) {
+export function getSetModeOption(id: string): CompanionInputFieldDropdown {
 	return {
 		type: 'dropdown' as const,
 		id,
@@ -170,7 +175,7 @@ export function resolveKey(
 		return keys[index]
 	}
 
-	const target = String(options.key_target ?? '')
+	const target = typeof options.key_target === 'string' ? options.key_target : ''
 	return keys.find((key) => keyTargetToken(key) === target)
 }
 

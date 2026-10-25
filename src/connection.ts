@@ -24,6 +24,12 @@ export interface ConnectionOptions {
 	reconnectDelayMs: number
 }
 
+function rawDataToString(data: RawData): string {
+	if (Buffer.isBuffer(data)) return data.toString()
+	if (Array.isArray(data)) return Buffer.concat(data).toString()
+	return Buffer.from(data).toString()
+}
+
 /**
  * One WebSocket to LiveMatrix, kept up: reconnects after a drop, and keeps an
  * idle link alive. Knows nothing about what the messages mean.
@@ -111,7 +117,7 @@ export class LiveMatrixConnection {
 			this.lastReceivedAt = Date.now()
 			let message: Message
 			try {
-				message = JSON.parse(data.toString()) as Message
+				message = JSON.parse(rawDataToString(data)) as Message
 			} catch (error) {
 				this.events.warn(`Ignoring invalid JSON message: ${String(error)}`)
 				return

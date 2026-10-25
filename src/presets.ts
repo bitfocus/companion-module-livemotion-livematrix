@@ -551,14 +551,14 @@ class PresetBuilder {
 			],
 			feedbacks: [
 				{
-					feedbackId: (talk ? 'talk_active' : 'listen_active') as 'talk_active' | 'listen_active',
+					feedbackId: talk ? 'talk_active' : 'listen_active',
 					options: keyOptions,
 					styleOverrides: [
 						{ elementId: 'fill', elementProperty: 'color', override: overrideValue(talk ? TALK_ON : LISTEN_ON) },
 					],
 				},
 				{
-					feedbackId: (talk ? 'talk_latched' : 'listen_latched') as 'talk_latched' | 'listen_latched',
+					feedbackId: talk ? 'talk_latched' : 'listen_latched',
 					options: keyOptions,
 					styleOverrides: [{ elementId: `${mode}-ring`, elementProperty: 'enabled', override: overrideValue(true) }],
 				},
@@ -588,7 +588,7 @@ class PresetBuilder {
 				{
 					down: [
 						{
-							actionId: (talk ? 'talk_down' : 'listen_down') as 'talk_down' | 'listen_down',
+							actionId: talk ? 'talk_down' : 'listen_down',
 							// Holding a listen key points the volume keys at it; a talk key
 							// never moves the selection.
 							options: {
@@ -601,7 +601,7 @@ class PresetBuilder {
 					],
 					up: [
 						{
-							actionId: (talk ? 'talk_up' : 'listen_up') as 'talk_up' | 'listen_up',
+							actionId: talk ? 'talk_up' : 'listen_up',
 							options: talk
 								? { ...keyOptions, press_behaviour: 'auto', double_tap_listen: false }
 								: { ...keyOptions, press_behaviour: 'auto' },

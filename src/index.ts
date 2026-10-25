@@ -708,7 +708,8 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 					},
 				],
 				callback: async (action) => {
-					this.onMicMove(String(action.options.device ?? MIC_MOVE_NEXT))
+					const device = action.options.device
+					this.onMicMove(typeof device === 'string' ? device : MIC_MOVE_NEXT)
 				},
 			},
 		}
