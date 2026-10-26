@@ -64,7 +64,7 @@ export function getConfigFields(): SomeCompanionConfigField[] {
 			label: 'Server port',
 			tooltip: `${DEFAULT_SERVER_TLS_PORT} with TLS on, ${DEFAULT_SERVER_PORT} without, unless the server's listeners were moved.`,
 			width: 4,
-			default: DEFAULT_SERVER_PORT,
+			default: DEFAULT_SERVER_TLS_PORT,
 			min: 1,
 			max: 65535,
 			isVisibleExpression: "$(options:connection_mode) == 'server'",
@@ -74,7 +74,7 @@ export function getConfigFields(): SomeCompanionConfigField[] {
 			id: 'server_tls',
 			label: 'Use TLS',
 			width: 2,
-			default: false,
+			default: true,
 			isVisibleExpression: "$(options:connection_mode) == 'server'",
 		},
 		{
@@ -149,7 +149,7 @@ export function buildWebSocketUrl(config: LivematrixConfig): string {
 	if (config.connection_mode === 'server') {
 		const scheme = config.server_tls ? 'wss' : 'ws'
 		const host = config.host?.trim() || 'localhost'
-		const port = config.port ?? DEFAULT_SERVER_PORT
+		const port = config.port ?? (config.server_tls ? DEFAULT_SERVER_TLS_PORT : DEFAULT_SERVER_PORT)
 		return `${scheme}://${host}:${port}/ws`
 	}
 
