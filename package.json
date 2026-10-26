@@ -3,7 +3,7 @@
 	"version": "0.1.0",
 	"private": true,
 	"type": "module",
-	"description": "Bitfocus Companion module for LiveMotion LiveMatrix",
+	"description": "Bitfocus Companion module for Livemotion livematrix",
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/bitfocus/companion-module-livemotion-livematrix.git"

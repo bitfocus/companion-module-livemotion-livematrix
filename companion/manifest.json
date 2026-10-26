@@ -22,7 +22,7 @@
 		"entrypoint": "../dist/index.js"
 	},
 	"legacyIds": ["livematrix"],
-	"manufacturer": "LiveMotion",
+	"manufacturer": "Livemotion",
 	"products": ["livematrix"],
 	"keywords": ["Intercom", "Audio", "Broadcast", "Talkback"]
 }
