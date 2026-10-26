@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { FakeLiveMatrix, startInstance, waitFor, type FakeOptions, type Mode } from './support/fake-livematrix.js'
+import { FakeLivematrix, startInstance, waitFor, type FakeOptions, type Mode } from './support/fake-livematrix.js'
 
 vi.mock('@companion-module/base', async () => import('./support/companion-base.js'))
 
-const { LiveMatrixInstance } = await import('../src/index.js')
+const { LivematrixInstance } = await import('../src/index.js')
 
 describe('connection', () => {
-	let fake: FakeLiveMatrix
+	let fake: FakeLivematrix
 	let instance: any
 
 	async function start(
@@ -14,8 +14,8 @@ describe('connection', () => {
 		options: FakeOptions = {},
 		timing: { keepaliveIntervalMs?: number; reconnectDelayMs?: number } = {},
 	) {
-		fake = new FakeLiveMatrix(mode, options)
-		instance = await startInstance(LiveMatrixInstance, fake, timing)
+		fake = new FakeLivematrix(mode, options)
+		instance = await startInstance(LivematrixInstance, fake, timing)
 	}
 
 	afterEach(async () => {

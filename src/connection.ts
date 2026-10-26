@@ -31,10 +31,10 @@ function rawDataToString(data: RawData): string {
 }
 
 /**
- * One WebSocket to LiveMatrix, kept up: reconnects after a drop, and keeps an
+ * One WebSocket to livematrix, kept up: reconnects after a drop, and keeps an
  * idle link alive. Knows nothing about what the messages mean.
  */
-export class LiveMatrixConnection {
+export class LivematrixConnection {
 	private ws: WebSocket | null = null
 	private reconnectTimer: NodeJS.Timeout | undefined
 	private keepaliveTimer: NodeJS.Timeout | undefined
@@ -155,7 +155,7 @@ export class LiveMatrixConnection {
 			// The server answers every ping, so silence this long means a socket
 			// that is open on our side only.
 			if (Date.now() - this.lastReceivedAt > interval * 3) {
-				this.events.warn('No reply from LiveMatrix, reconnecting')
+				this.events.warn('No reply from livematrix, reconnecting')
 				this.ws?.terminate()
 				return
 			}

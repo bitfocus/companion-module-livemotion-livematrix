@@ -79,12 +79,12 @@ export interface FakeOptions {
 }
 
 /**
- * Plays the LiveMatrix server (`/ws`, answers a login and pings) or the app's
+ * Plays the livematrix server (`/ws`, answers a login and pings) or the app's
  * local control API (`/`, greets straight away with no login, ignores what it
  * does not know). Both speak the same protocol after that, so one fake covers
  * both.
  */
-export class FakeLiveMatrix {
+export class FakeLivematrix {
 	readonly received: Message[] = []
 	readonly paths: string[] = []
 	connections = 0
@@ -174,7 +174,6 @@ export function configFor(mode: Mode, port: number) {
 				server_tls: false,
 				client_host: '',
 				client_port: 0,
-				client_tls: false,
 			}
 		: {
 				connection_mode: 'client',
@@ -184,7 +183,6 @@ export function configFor(mode: Mode, port: number) {
 				server_tls: false,
 				client_host: '127.0.0.1',
 				client_port: port,
-				client_tls: false,
 			}
 }
 
@@ -194,7 +192,7 @@ export function configFor(mode: Mode, port: number) {
  */
 export async function startInstance(
 	InstanceClass: new (internal: any) => any,
-	fake: FakeLiveMatrix,
+	fake: FakeLivematrix,
 	timing: { keepaliveIntervalMs?: number; reconnectDelayMs?: number } = {},
 ): Promise<any> {
 	const port = await fake.listening()

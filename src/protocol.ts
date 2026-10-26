@@ -1,5 +1,5 @@
 /**
- * The LiveMatrix wire protocol, as far as this module speaks it. The same
+ * The livematrix wire protocol, as far as this module speaks it. The same
  * messages travel over the server's `/ws` endpoint and over a client app's
  * local control API; only the server asks for a login first.
  */
