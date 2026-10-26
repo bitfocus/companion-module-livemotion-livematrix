@@ -34,7 +34,7 @@ function rawDataToString(data: RawData): string {
  * One WebSocket to livematrix, kept up: reconnects after a drop, and keeps an
  * idle link alive. Knows nothing about what the messages mean.
  */
-export class LiveMatrixConnection {
+export class LivematrixConnection {
 	private ws: WebSocket | null = null
 	private reconnectTimer: NodeJS.Timeout | undefined
 	private keepaliveTimer: NodeJS.Timeout | undefined

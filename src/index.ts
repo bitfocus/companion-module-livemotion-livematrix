@@ -12,13 +12,13 @@ import {
 	buildWebSocketUrl,
 	getConfigFields,
 	validateConfig,
-	type LiveMatrixConfig,
-	type LiveMatrixManifest,
-	type LiveMatrixSecrets,
+	type LivematrixConfig,
+	type LivematrixManifest,
+	type LivematrixSecrets,
 } from './config.js'
 import { ActivityStore } from './activity.js'
 import { ACCENT_HIGH, INCOMING, LISTEN_ON, MIC_MUTED_FILL, NAME_OFFLINE, TALK_ON, TEXT, WARN } from './brand.js'
-import { LiveMatrixConnection } from './connection.js'
+import { LivematrixConnection } from './connection.js'
 import { KeyStateStore } from './key-state.js'
 import {
 	MAX_LISTEN_LEVEL_DB,
@@ -147,10 +147,10 @@ function createControlState(): KeyControlState {
 	}
 }
 
-export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
-	config!: LiveMatrixConfig
-	secrets!: LiveMatrixSecrets
-	private connection: LiveMatrixConnection | undefined
+export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
+	config!: LivematrixConfig
+	secrets!: LivematrixSecrets
+	private connection: LivematrixConnection | undefined
 
 	private userId = ''
 	private displayName = ''
@@ -208,7 +208,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	protected keepaliveIntervalMs = SERVER_KEEPALIVE_INTERVAL_MS
 	protected reconnectDelayMs = RECONNECT_DELAY_MS
 
-	async init(config: LiveMatrixConfig, _isFirstInit: boolean, secrets: LiveMatrixSecrets): Promise<void> {
+	async init(config: LivematrixConfig, _isFirstInit: boolean, secrets: LivematrixSecrets): Promise<void> {
 		this.config = config
 		this.secrets = secrets
 		this.setupDefinitions()
@@ -222,7 +222,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 		await this.disconnect()
 	}
 
-	async configUpdated(config: LiveMatrixConfig, secrets: LiveMatrixSecrets): Promise<void> {
+	async configUpdated(config: LivematrixConfig, secrets: LivematrixSecrets): Promise<void> {
 		this.config = config
 		this.secrets = secrets
 		this.clearHolds()
@@ -245,7 +245,7 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 
 		const serverMode = this.config.connection_mode === 'server'
 		this.updateStatus(InstanceStatus.Connecting)
-		this.connection = new LiveMatrixConnection(
+		this.connection = new LivematrixConnection(
 			buildWebSocketUrl(this.config),
 			{
 				open: () => {
@@ -1678,6 +1678,6 @@ export class LiveMatrixInstance extends InstanceBase<LiveMatrixManifest> {
 	}
 }
 
-export default LiveMatrixInstance
-export type { LiveMatrixConfig, LiveMatrixSecrets }
+export default LivematrixInstance
+export type { LivematrixConfig, LivematrixSecrets }
 export { UpgradeScripts } from './upgrades.js'

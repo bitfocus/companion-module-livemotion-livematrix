@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { FakeLiveMatrix, INITIAL_MIC, startInstance, waitFor, type Message } from './support/fake-livematrix.js'
+import { FakeLivematrix, INITIAL_MIC, startInstance, waitFor, type Message } from './support/fake-livematrix.js'
 
 vi.mock('@companion-module/base', async () => import('./support/companion-base.js'))
 
-const { LiveMatrixInstance } = await import('../src/index.js')
+const { LivematrixInstance } = await import('../src/index.js')
 const { MIC_MUTED_FILL } = await import('../src/brand.js')
 
 type MicPush = {
@@ -16,7 +16,7 @@ type MicPush = {
 
 for (const mode of ['server', 'client'] as const) {
 	describe(`mic mute over the ${mode} connection`, () => {
-		let fake: FakeLiveMatrix
+		let fake: FakeLivematrix
 		let instance: any
 
 		/** Wait until the fake has seen `count` messages of this type, and return the last. */
@@ -33,8 +33,8 @@ for (const mode of ['server', 'client'] as const) {
 		}
 
 		beforeEach(async () => {
-			fake = new FakeLiveMatrix(mode)
-			instance = await startInstance(LiveMatrixInstance, fake)
+			fake = new FakeLivematrix(mode)
+			instance = await startInstance(LivematrixInstance, fake)
 			await waitFor(() => fake.isGreeted && instance.values.mic_device === 'Desk', 'the initial mic state')
 		})
 

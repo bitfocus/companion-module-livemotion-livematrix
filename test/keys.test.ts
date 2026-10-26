@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-	FakeLiveMatrix,
+	FakeLivematrix,
 	LOGIN_SUCCESS,
 	USER_KEY,
 	emptyUserState,
@@ -10,7 +10,7 @@ import {
 
 vi.mock('@companion-module/base', async () => import('./support/companion-base.js'))
 
-const { LiveMatrixInstance } = await import('../src/index.js')
+const { LivematrixInstance } = await import('../src/index.js')
 
 const FEED_KEY = {
 	...USER_KEY,
@@ -43,14 +43,14 @@ const byTarget = (key: { target_type: string; target_id: string }) => ({
 })
 
 describe('keys of every kind', () => {
-	let fake: FakeLiveMatrix
+	let fake: FakeLivematrix
 	let instance: any
 
 	beforeEach(async () => {
-		fake = new FakeLiveMatrix('server', {
+		fake = new FakeLivematrix('server', {
 			loginSuccess: { ...LOGIN_SUCCESS, keys: [USER_KEY, FEED_KEY, GROUP_KEY, LINE_KEY] },
 		})
-		instance = await startInstance(LiveMatrixInstance, fake)
+		instance = await startInstance(LivematrixInstance, fake)
 		await waitFor(() => instance.values.key_count === 4, 'the keys')
 	})
 

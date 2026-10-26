@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { FakeLiveMatrix, LOGIN_SUCCESS, USER_KEY, startInstance, waitFor } from './support/fake-livematrix.js'
+import { FakeLivematrix, LOGIN_SUCCESS, USER_KEY, startInstance, waitFor } from './support/fake-livematrix.js'
 
 vi.mock('@companion-module/base', async () => import('./support/companion-base.js'))
 
-const { LiveMatrixInstance } = await import('../src/index.js')
+const { LivematrixInstance } = await import('../src/index.js')
 const { getPresetDefinitions } = await import('../src/presets.js')
 const { AUDIO_TRAIL_MS } = await import('../src/activity.js')
 
@@ -33,18 +33,18 @@ const BOB = { user_id: 'user-b', display_name: 'Bob' }
 const CAROL = { user_id: 'user-c', display_name: 'Carol' }
 
 describe.each(['server', 'client'] as const)('incoming activity over the %s connection', (mode) => {
-	let fake: FakeLiveMatrix
+	let fake: FakeLivematrix
 	let instance: any
 
 	beforeEach(async () => {
-		fake = new FakeLiveMatrix(mode, {
+		fake = new FakeLivematrix(mode, {
 			loginSuccess: {
 				...LOGIN_SUCCESS,
 				keys: [USER_KEY, LINE_KEY, GROUP_KEY],
 				groups: [{ id: 'group-crew', name: 'Crew', member_ids: ['user-c'] }],
 			},
 		})
-		instance = await startInstance(LiveMatrixInstance, fake)
+		instance = await startInstance(LivematrixInstance, fake)
 		await waitFor(() => instance.values.key_count === 3, 'the keys')
 	})
 

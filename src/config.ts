@@ -2,7 +2,7 @@ import { Regex, type CompanionVariableValues, type SomeCompanionConfigField } fr
 
 export type ConnectionMode = 'server' | 'client'
 
-export type LiveMatrixConfig = {
+export type LivematrixConfig = {
 	connection_mode: ConnectionMode
 	host: string
 	port: number
@@ -12,13 +12,13 @@ export type LiveMatrixConfig = {
 	client_port: number
 }
 
-export type LiveMatrixSecrets = {
+export type LivematrixSecrets = {
 	password?: string
 }
 
-export type LiveMatrixManifest = {
-	config: LiveMatrixConfig
-	secrets: LiveMatrixSecrets
+export type LivematrixManifest = {
+	config: LivematrixConfig
+	secrets: LivematrixSecrets
 	actions: Record<string, any>
 	feedbacks: Record<string, any>
 	variables: CompanionVariableValues
@@ -119,7 +119,7 @@ export function getConfigFields(): SomeCompanionConfigField[] {
 	]
 }
 
-export function validateConfig(config: LiveMatrixConfig, secrets: LiveMatrixSecrets): string | undefined {
+export function validateConfig(config: LivematrixConfig, secrets: LivematrixSecrets): string | undefined {
 	if (config.connection_mode === 'server') {
 		if (!config.host?.trim()) return 'Server host is required'
 		if (!config.username?.trim()) return 'Username is required'
@@ -130,7 +130,7 @@ export function validateConfig(config: LiveMatrixConfig, secrets: LiveMatrixSecr
 	return undefined
 }
 
-export function buildWebSocketUrl(config: LiveMatrixConfig): string {
+export function buildWebSocketUrl(config: LivematrixConfig): string {
 	if (config.connection_mode === 'server') {
 		const scheme = config.server_tls ? 'wss' : 'ws'
 		const host = config.host?.trim() || 'localhost'

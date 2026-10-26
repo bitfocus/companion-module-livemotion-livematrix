@@ -1,7 +1,7 @@
 import type { CompanionMigrationAction, CompanionStaticUpgradeScript } from '@companion-module/base'
-import type { LiveMatrixConfig, LiveMatrixSecrets } from './config.js'
+import type { LivematrixConfig, LivematrixSecrets } from './config.js'
 
-type Script = CompanionStaticUpgradeScript<LiveMatrixConfig, LiveMatrixSecrets>
+type Script = CompanionStaticUpgradeScript<LivematrixConfig, LivematrixSecrets>
 
 function optionValue(action: CompanionMigrationAction, id: string): unknown {
 	const option = action.options[id]

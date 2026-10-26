@@ -84,7 +84,7 @@ export interface FakeOptions {
  * does not know). Both speak the same protocol after that, so one fake covers
  * both.
  */
-export class FakeLiveMatrix {
+export class FakeLivematrix {
 	readonly received: Message[] = []
 	readonly paths: string[] = []
 	connections = 0
@@ -192,7 +192,7 @@ export function configFor(mode: Mode, port: number) {
  */
 export async function startInstance(
 	InstanceClass: new (internal: any) => any,
-	fake: FakeLiveMatrix,
+	fake: FakeLivematrix,
 	timing: { keepaliveIntervalMs?: number; reconnectDelayMs?: number } = {},
 ): Promise<any> {
 	const port = await fake.listening()

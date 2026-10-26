@@ -28,7 +28,7 @@ import {
 	INCOMING_TRAIL,
 	WARN,
 } from './brand.js'
-import type { LiveMatrixManifest } from './config.js'
+import type { LivematrixManifest } from './config.js'
 import { LEVEL_STEP_DB, MAX_LISTEN_LEVEL_DB, MIN_LISTEN_LEVEL_DB_DISPLAY } from './levels.js'
 import { MIC_ICON, MIC_OFF_ICON } from './icons.js'
 import { KEY_LOCAL_VARIABLE, expr, keyLocalVariable, overrideValue, presetKeyOptions } from './options.js'
@@ -134,8 +134,8 @@ function offlineNameOverrides() {
 }
 
 export function getPresetDefinitions(keys: KeyConfig[]): {
-	structure: CompanionPresetSection<LiveMatrixManifest>[]
-	presets: CompanionPresetDefinitions<LiveMatrixManifest>
+	structure: CompanionPresetSection<LivematrixManifest>[]
+	presets: CompanionPresetDefinitions<LivematrixManifest>
 } {
 	return new PresetBuilder(keys).build()
 }
@@ -145,10 +145,10 @@ class PresetBuilder {
 	constructor(private readonly keys: KeyConfig[]) {}
 
 	build(): {
-		structure: CompanionPresetSection<LiveMatrixManifest>[]
-		presets: CompanionPresetDefinitions<LiveMatrixManifest>
+		structure: CompanionPresetSection<LivematrixManifest>[]
+		presets: CompanionPresetDefinitions<LivematrixManifest>
 	} {
-		const presets: CompanionPresetDefinitions<LiveMatrixManifest> = {
+		const presets: CompanionPresetDefinitions<LivematrixManifest> = {
 			mic_button: this.createMicPreset(),
 		}
 		presets['selected_volume'] = this.createSelectedVolumePreset()
@@ -168,7 +168,7 @@ class PresetBuilder {
 			presets['listen_by_index'] = this.createSideKeyPreset('listen', 'Listen key (by index)', 'index')
 		}
 
-		const structure: CompanionPresetSection<LiveMatrixManifest>[] = [
+		const structure: CompanionPresetSection<LivematrixManifest>[] = [
 			{
 				id: 'keys',
 				name: 'Intercom keys',
@@ -205,7 +205,7 @@ class PresetBuilder {
 		idPrefix: string,
 		targetPresetId: string,
 		indexPresetId: string,
-	): CompanionPresetGroup<LiveMatrixManifest>[] {
+	): CompanionPresetGroup<LivematrixManifest>[] {
 		if (this.keys.length === 0) return []
 
 		return [
