@@ -172,6 +172,7 @@ export function configFor(mode: Mode, port: number) {
 				port,
 				username: 'alice',
 				server_tls: false,
+				server_tls_self_signed: false,
 				client_host: '',
 				client_port: 0,
 			}
@@ -181,6 +182,7 @@ export function configFor(mode: Mode, port: number) {
 				port: 0,
 				username: '',
 				server_tls: false,
+				server_tls_self_signed: false,
 				client_host: '127.0.0.1',
 				client_port: port,
 			}

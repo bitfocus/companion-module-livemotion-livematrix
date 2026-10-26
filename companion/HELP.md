@@ -6,7 +6,8 @@ This module controls livematrix talk and listen keys and the microphone mute fro
 
 The module connects in one of two modes.
 
-- `Direct to server` connects to `ws://host:port/ws`, or `wss://` with TLS on, and logs in with a livematrix username and password. An installed server listens on port `55678`. The module pings the server while the link is idle so the server does not drop it, and reconnects after any drop.
+- `Direct to server` connects to `ws://host:port/ws`, or `wss://` with TLS on, and logs in with a livematrix username and password. Use port `9443` with TLS on, or `9080` without TLS, unless the server's listeners were moved. The module pings the server while the link is idle so the server does not drop it, and reconnects after any drop.
+- `Accept a self-signed certificate`, with TLS on, connects to a server that has no trusted certificate for the host you entered, such as one addressed by IP address. The link is still encrypted, but the server's identity is not checked.
 - `Via a client's control API` connects to a livematrix client app at `ws://127.0.0.1:9100` and needs no login, because the app is already logged in. The app only accepts control API connections from its own machine, so it has to run on the computer that runs Companion.
 
 A wrong password stops the module, which shows the error. If the server refuses the login for a reason that clears up by itself, such as every licence being in use, the module keeps retrying. If the server ends the session on purpose, for example at the end of a trial session, the module stays disconnected until you save the connection config again.

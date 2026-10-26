@@ -274,6 +274,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 			{
 				keepaliveIntervalMs: serverMode ? this.keepaliveIntervalMs : 0,
 				reconnectDelayMs: this.reconnectDelayMs,
+				allowUnverifiedCertificate: serverMode && this.config.server_tls && this.config.server_tls_self_signed,
 			},
 		)
 		this.connection.start()

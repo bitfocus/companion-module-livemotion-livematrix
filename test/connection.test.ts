@@ -4,6 +4,7 @@ import { FakeLivematrix, startInstance, waitFor, type FakeOptions, type Mode } f
 vi.mock('@companion-module/base', async () => import('./support/companion-base.js'))
 
 const { LivematrixInstance } = await import('../src/index.js')
+const { UpgradeScripts } = await import('../src/upgrades.js')
 
 describe('connection', () => {
 	let fake: FakeLivematrix
@@ -85,5 +86,19 @@ describe('connection', () => {
 		await new Promise((resolve) => setTimeout(resolve, 100))
 		expect(fake.connections).toBe(1)
 		expect(instance.status).toEqual({ status: 'disconnected', message: 'The trial session has ended' })
+	})
+})
+
+describe('server port upgrade', () => {
+	const upgrade = (config: any) =>
+		UpgradeScripts[1]({ currentConfig: config }, { config, secrets: null, actions: [], feedbacks: [] })
+
+	it('moves the old 55678 default to the listener matching TLS', () => {
+		expect(upgrade({ port: 55678, server_tls: false }).updatedConfig).toMatchObject({ port: 9080 })
+		expect(upgrade({ port: 55678, server_tls: true }).updatedConfig).toMatchObject({ port: 9443 })
+	})
+
+	it('leaves a port someone chose alone', () => {
+		expect(upgrade({ port: 8443, server_tls: true }).updatedConfig).toBeNull()
 	})
 })
