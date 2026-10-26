@@ -22,6 +22,11 @@ export interface ConnectionOptions {
 	keepaliveIntervalMs: number
 	/** How long to wait before trying again after the socket goes away. */
 	reconnectDelayMs: number
+	/**
+	 * Accept a TLS certificate that does not verify, such as the server's
+	 * self-signed one, which is all it has for an IP address.
+	 */
+	allowUnverifiedCertificate?: boolean
 }
 
 /**
@@ -96,7 +101,7 @@ export class LiveMatrixConnection {
 	}
 
 	private open(): void {
-		const ws = new WebSocket(this.url)
+		const ws = new WebSocket(this.url, { rejectUnauthorized: !this.options.allowUnverifiedCertificate })
 		this.ws = ws
 
 		ws.on('open', () => {

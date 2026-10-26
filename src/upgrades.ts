@@ -1,5 +1,5 @@
 import type { CompanionMigrationAction, CompanionStaticUpgradeScript } from '@companion-module/base'
-import type { LiveMatrixConfig, LiveMatrixSecrets } from './config.js'
+import { DEFAULT_SERVER_PORT, DEFAULT_SERVER_TLS_PORT, type LiveMatrixConfig, type LiveMatrixSecrets } from './config.js'
 
 type Script = CompanionStaticUpgradeScript<LiveMatrixConfig, LiveMatrixSecrets>
 
@@ -47,4 +47,18 @@ const selectOnlyWhileHeld: Script = (_context, props) => {
 	return { updatedConfig: null, updatedActions, updatedFeedbacks: [] }
 }
 
-export const UpgradeScripts: Script[] = [selectOnlyWhileHeld]
+/**
+ * The server port used to default to 55678, which livematrix never listens
+ * on. A connection left on it moves to the port that matches its TLS setting.
+ */
+const serverPortFromListeners: Script = (_context, props) => {
+	const config = props.config
+	if (!config || config.port !== 55678) return { updatedConfig: null, updatedActions: [], updatedFeedbacks: [] }
+	return {
+		updatedConfig: { ...config, port: config.server_tls ? DEFAULT_SERVER_TLS_PORT : DEFAULT_SERVER_PORT },
+		updatedActions: [],
+		updatedFeedbacks: [],
+	}
+}
+
+export const UpgradeScripts: Script[] = [selectOnlyWhileHeld, serverPortFromListeners]

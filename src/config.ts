@@ -8,6 +8,7 @@ export type LiveMatrixConfig = {
 	port: number
 	username: string
 	server_tls: boolean
+	server_tls_self_signed: boolean
 	client_host: string
 	client_port: number
 	client_tls: boolean
@@ -25,7 +26,10 @@ export type LiveMatrixManifest = {
 	variables: CompanionVariableValues
 }
 
-export const DEFAULT_SERVER_PORT = 55678
+/** A livematrix server's plain HTTP listener; `/ws` is served there too. */
+export const DEFAULT_SERVER_PORT = 9080
+/** A livematrix server's HTTPS listener, on when the server has TLS turned on. */
+export const DEFAULT_SERVER_TLS_PORT = 9443
 export const DEFAULT_CLIENT_PORT = 9100
 /**
  * The client app's control API listens on IPv4 loopback only, so client mode
@@ -59,6 +63,7 @@ export function getConfigFields(): SomeCompanionConfigField[] {
 			type: 'number',
 			id: 'port',
 			label: 'Server port',
+			tooltip: `${DEFAULT_SERVER_TLS_PORT} with TLS on, ${DEFAULT_SERVER_PORT} without, unless the server's listeners were moved.`,
 			width: 4,
 			default: DEFAULT_SERVER_PORT,
 			min: 1,
@@ -72,6 +77,16 @@ export function getConfigFields(): SomeCompanionConfigField[] {
 			width: 2,
 			default: false,
 			isVisibleExpression: "$(options:connection_mode) == 'server'",
+		},
+		{
+			type: 'checkbox',
+			id: 'server_tls_self_signed',
+			label: 'Accept a self-signed certificate',
+			tooltip:
+				"Skips checking the server's certificate, so the connection is encrypted but the server is not verified. Needed to connect by IP address, or to a hostname without a trusted certificate.",
+			width: 12,
+			default: false,
+			isVisibleExpression: "$(options:connection_mode) == 'server' && $(options:server_tls)",
 		},
 		{
 			type: 'textinput',
