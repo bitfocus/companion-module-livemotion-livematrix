@@ -1,7 +1,12 @@
 import type { CompanionMigrationAction, CompanionStaticUpgradeScript } from '@companion-module/base'
-import { DEFAULT_SERVER_PORT, DEFAULT_SERVER_TLS_PORT, type LiveMatrixConfig, type LiveMatrixSecrets } from './config.js'
+import {
+	DEFAULT_SERVER_PORT,
+	DEFAULT_SERVER_TLS_PORT,
+	type LivematrixConfig,
+	type LivematrixSecrets,
+} from './config.js'
 
-type Script = CompanionStaticUpgradeScript<LiveMatrixConfig, LiveMatrixSecrets>
+type Script = CompanionStaticUpgradeScript<LivematrixConfig, LivematrixSecrets>
 
 function optionValue(action: CompanionMigrationAction, id: string): unknown {
 	const option = action.options[id]

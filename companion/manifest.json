@@ -1,22 +1,28 @@
 {
-  "type": "connection",
-  "id": "livematrix",
-  "name": "LiveMatrix",
-  "shortname": "livematrix",
-  "description": "Control LiveMatrix talk, listen and mic mute over the existing websocket protocol",
-  "version": "0.1.0",
-  "license": "UNLICENSED",
-  "repository": "https://github.com/yannisgu/companion-module-livematrix.git",
-  "bugs": "https://github.com/yannisgu/companion-module-livematrix/issues",
-  "maintainers": [],
-  "runtime": {
-    "type": "node22",
-    "api": "nodejs-ipc",
-    "apiVersion": "2.1.3",
-    "entrypoint": "../dist/index.js"
-  },
-  "legacyIds": [],
-  "manufacturer": "LiveMatrix",
-  "products": ["Companion Module"],
-  "keywords": ["Intercom", "Audio", "Broadcast", "Talkback"]
+	"$schema": "../node_modules/@companion-module/base/assets/manifest.schema.json",
+	"type": "connection",
+	"id": "livemotion-livematrix",
+	"name": "livemotion-livematrix",
+	"shortname": "livematrix",
+	"description": "Control livematrix talk and listen keys and the microphone mute",
+	"version": "0.1.0",
+	"license": "MIT",
+	"repository": "git+https://github.com/bitfocus/companion-module-livemotion-livematrix.git",
+	"bugs": "https://github.com/bitfocus/companion-module-livemotion-livematrix/issues",
+	"maintainers": [
+		{
+			"name": "Yannis Güdel",
+			"email": "yg@livemotion.ch"
+		}
+	],
+	"runtime": {
+		"type": "node26",
+		"api": "nodejs-ipc",
+		"apiVersion": "2.2.1",
+		"entrypoint": "../dist/index.js"
+	},
+	"legacyIds": ["livematrix"],
+	"manufacturer": "Livemotion",
+	"products": ["livematrix"],
+	"keywords": ["Intercom", "Audio", "Broadcast", "Talkback"]
 }

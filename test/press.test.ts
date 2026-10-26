@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-	FakeLiveMatrix,
+	FakeLivematrix,
 	LOGIN_SUCCESS,
 	USER_KEY,
 	emptyUserState,
@@ -9,9 +9,9 @@ import {
 	type Message,
 } from './support/fake-livematrix.js'
 
-vi.mock('@companion-module/base', () => import('./support/companion-base.js'))
+vi.mock('@companion-module/base', async () => import('./support/companion-base.js'))
 
-const { LiveMatrixInstance } = await import('../src/index.js')
+const { LivematrixInstance } = await import('../src/index.js')
 
 const FEED_KEY = {
 	...USER_KEY,
@@ -35,7 +35,7 @@ type Key = typeof USER_KEY
 type Layers = { latched: boolean; momentary: boolean }
 
 const byTarget = (key: Key) => ({ selection_mode: 'target', key_target: `${key.target_type}:${key.target_id}` })
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const sleep = async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
  * Both layers of one half of a key, as the server would hold them after every
@@ -57,14 +57,14 @@ function serverLayers(received: Message[], key: Key, field: 'talk' | 'listen'): 
 }
 
 describe('releasing a press', () => {
-	let fake: FakeLiveMatrix
+	let fake: FakeLivematrix
 	let instance: any
 
 	beforeEach(async () => {
-		fake = new FakeLiveMatrix('server', {
+		fake = new FakeLivematrix('server', {
 			loginSuccess: { ...LOGIN_SUCCESS, keys: [USER_KEY, FEED_KEY, GROUP_KEY] },
 		})
-		instance = await startInstance(LiveMatrixInstance, fake)
+		instance = await startInstance(LivematrixInstance, fake)
 		await waitFor(() => instance.values.key_count === 3, 'the keys')
 	})
 

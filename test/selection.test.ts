@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { FakeLiveMatrix, LOGIN_SUCCESS, USER_KEY, startInstance, waitFor } from './support/fake-livematrix.js'
+import { FakeLivematrix, LOGIN_SUCCESS, USER_KEY, startInstance, waitFor } from './support/fake-livematrix.js'
 
-vi.mock('@companion-module/base', () => import('./support/companion-base.js'))
+vi.mock('@companion-module/base', async () => import('./support/companion-base.js'))
 
-const { LiveMatrixInstance } = await import('../src/index.js')
+const { LivematrixInstance } = await import('../src/index.js')
 const { UpgradeScripts } = await import('../src/upgrades.js')
 
 const LINE_KEY = {
@@ -17,17 +17,17 @@ const LINE_KEY = {
 type Key = typeof USER_KEY
 const byTarget = (key: Key) => ({ selection_mode: 'target', key_target: `${key.target_type}:${key.target_id}` })
 const SELECTED = { selection_mode: 'selected' }
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const sleep = async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 /** Long enough that a press is plainly being held. */
 const HOLD_MS = 350
 
 describe('selecting a key by holding it', () => {
-	let fake: FakeLiveMatrix
+	let fake: FakeLivematrix
 	let instance: any
 
 	beforeEach(async () => {
-		fake = new FakeLiveMatrix('server', { loginSuccess: { ...LOGIN_SUCCESS, keys: [USER_KEY, LINE_KEY] } })
-		instance = await startInstance(LiveMatrixInstance, fake)
+		fake = new FakeLivematrix('server', { loginSuccess: { ...LOGIN_SUCCESS, keys: [USER_KEY, LINE_KEY] } })
+		instance = await startInstance(LivematrixInstance, fake)
 		await waitFor(() => instance.values.key_count === 2, 'the keys')
 	})
 

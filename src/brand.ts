@@ -1,7 +1,7 @@
 import { combineRgb } from '@companion-module/base'
 
 /**
- * The LiveMatrix client app's palette (`BrandColors` in the client), so a key on
+ * The livematrix client app's palette (`BrandColors` in the client), so a key on
  * a Companion surface looks like the same key in the app. The app is dark only
  * and flat: no gradients, no glow, colour only where something is on.
  */
