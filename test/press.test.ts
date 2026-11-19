@@ -75,7 +75,7 @@ describe('releasing a press', () => {
 
 	/** Press and release one half of a key the way the presets do, holding it for `holdMs`. */
 	async function press(key: Key, field: 'talk' | 'listen', holdMs: number): Promise<void> {
-		const options = { ...byTarget(key), press_behaviour: 'auto' }
+		const options = { ...byTarget(key), press_behaviour: 'auto', double_tap_listen: true }
 		await instance.runAction(`${field}_down`, options)
 		await sleep(holdMs)
 		await instance.runAction(`${field}_up`, options)
@@ -105,7 +105,7 @@ describe('releasing a press', () => {
 	})
 
 	it('holds an unlatched key as a press and lets go of it on release', async () => {
-		const options = { ...byTarget(USER_KEY), press_behaviour: 'auto' }
+		const options = { ...byTarget(USER_KEY), press_behaviour: 'auto', double_tap_listen: true }
 		await instance.runAction('talk_down', options)
 		await sleep(400)
 		expect(await layers(USER_KEY, 'talk')).toEqual({ latched: false, momentary: true })
@@ -156,8 +156,14 @@ describe('a talk press', () => {
 
 	const talkStates = () => fake.sent('set_key_state').filter((message) => message.field === 'talk')
 
-	it('waits before opening the mic on a key that can also listen', async () => {
-		await instance.runAction('talk_down', { ...byTarget(USER_KEY), press_behaviour: 'auto' })
+	it('opens the mic at once on a button that does not double tap', async () => {
+		await instance.runAction('talk_down', { ...byTarget(USER_KEY), press_behaviour: 'auto', double_tap_listen: false })
+		await sleep(40)
+		expect(talkStates()).toMatchObject([{ hold: 'momentary', active: true }])
+	})
+
+	it('waits before opening the mic on a button that double taps', async () => {
+		await instance.runAction('talk_down', { ...byTarget(USER_KEY), press_behaviour: 'auto', double_tap_listen: true })
 		await sleep(40)
 		expect(talkStates()).toEqual([])
 		await sleep(200)
@@ -165,7 +171,7 @@ describe('a talk press', () => {
 	})
 
 	it('still waiting when the connection goes away, never lands', async () => {
-		await instance.runAction('talk_down', { ...byTarget(USER_KEY), press_behaviour: 'auto' })
+		await instance.runAction('talk_down', { ...byTarget(USER_KEY), press_behaviour: 'auto', double_tap_listen: true })
 		await instance.destroy()
 		await sleep(300)
 		expect(instance.heartbeatTimer).toBeUndefined()

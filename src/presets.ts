@@ -592,7 +592,8 @@ class PresetBuilder {
 			steps: [
 				{
 					// Holding a listen key points the volume keys at it; a talk key
-					// never moves the selection.
+					// never moves the selection. A talk key here has no listen half
+					// to double tap into, so its press opens the mic straight away.
 					down: [
 						talk
 							? {
@@ -602,6 +603,7 @@ class PresetBuilder {
 										press_behaviour: 'auto' as const,
 										hold_selects: false,
 										also_select: false,
+										double_tap_listen: false,
 									},
 								}
 							: {
@@ -613,7 +615,7 @@ class PresetBuilder {
 						talk
 							? {
 									actionId: 'talk_up' as const,
-									options: { ...keyOptions, press_behaviour: 'auto' as const },
+									options: { ...keyOptions, press_behaviour: 'auto' as const, double_tap_listen: false },
 								}
 							: { actionId: 'listen_up' as const, options: { ...keyOptions, press_behaviour: 'auto' as const } },
 					],
@@ -733,13 +735,14 @@ class PresetBuilder {
 								press_behaviour: 'auto' as const,
 								hold_selects: true,
 								also_select: false,
+								double_tap_listen: true,
 							},
 						},
 					],
 					up: [
 						{
 							actionId: 'talk_up' as const,
-							options: { ...keyOptions, press_behaviour: 'auto' as const },
+							options: { ...keyOptions, press_behaviour: 'auto' as const, double_tap_listen: true },
 						},
 					],
 					rotate_left: [

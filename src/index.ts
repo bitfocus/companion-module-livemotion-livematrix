@@ -621,7 +621,7 @@ export class LivematrixInstance extends InstanceBase<ModuleSchema> {
 		this.pushVariableValues()
 	}
 
-	onTalkDown(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
+	onTalkDown(key: KeyConfig, behaviour: PressBehaviour = 'auto', doubleTapListen = true): void {
 		if (!key.can_talk) return
 
 		// Latch-only keys toggle on the press and never hold, so there is nothing
@@ -648,7 +648,7 @@ export class LivematrixInstance extends InstanceBase<ModuleSchema> {
 		// On a key that double taps, hold the mic closed for a moment. A tap
 		// quick enough to be half of a double tap is over before this fires, so
 		// the gesture never opens the mic or lights the key at all.
-		if (PRESS_SETTLE_MS > 0 && this.doubleTapArmed(key)) {
+		if (PRESS_SETTLE_MS > 0 && this.doubleTapArmed(key, doubleTapListen)) {
 			this.pressTimers.set(
 				key.target_id,
 				setTimeout(() => {
@@ -697,7 +697,7 @@ export class LivematrixInstance extends InstanceBase<ModuleSchema> {
 		return true
 	}
 
-	onTalkUp(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
+	onTalkUp(key: KeyConfig, behaviour: PressBehaviour = 'auto', doubleTapListen = true): void {
 		if (!key.can_talk) return
 		if (this.latchesOnPress(key, 'talk', behaviour)) return
 
@@ -721,18 +721,18 @@ export class LivematrixInstance extends InstanceBase<ModuleSchema> {
 		// Hold a tap's talk state back briefly in case a second tap follows. The
 		// press stays held meanwhile, so a plain tap that turns into a latch has
 		// no gap in it, and one that turns into a double tap never latches.
-		if (wasShortPress && this.doubleTapArmed(key)) {
+		if (wasShortPress && this.doubleTapArmed(key, doubleTapListen)) {
 			this.settleTimers.set(
 				key.target_id,
 				setTimeout(() => {
 					this.settleTimers.delete(key.target_id)
-					this.commitTalkRelease(key, behaviour, wasShortPress, latchedBefore)
+					this.commitTalkRelease(key, behaviour, wasShortPress, latchedBefore, doubleTapListen)
 				}, DOUBLE_TAP_SETTLE_MS),
 			)
 			return
 		}
 
-		this.commitTalkRelease(key, behaviour, wasShortPress, latchedBefore)
+		this.commitTalkRelease(key, behaviour, wasShortPress, latchedBefore, doubleTapListen)
 	}
 
 	/**
@@ -743,6 +743,7 @@ export class LivematrixInstance extends InstanceBase<ModuleSchema> {
 		behaviour: PressBehaviour,
 		wasShortPress: boolean,
 		latchedBefore: boolean,
+		doubleTapListen: boolean,
 	): void {
 		this.pressApplied.delete(key.target_id)
 		this.talkControlState.pressing.set(key.target_id, false)
@@ -750,7 +751,7 @@ export class LivematrixInstance extends InstanceBase<ModuleSchema> {
 		// A late second tap - one that arrived after the settle window, so the
 		// first tap had already latched - still switches listening, and puts talk
 		// back where that first tap found it.
-		const secondTap = wasShortPress && this.takeDoubleTap(key)
+		const secondTap = wasShortPress && this.takeDoubleTap(key, doubleTapListen)
 		if (secondTap) {
 			this.talkControlState.latched.set(key.target_id, this.talkLatchBeforeTap.get(key.target_id) ?? false)
 			this.talkLatchBeforeTap.delete(key.target_id)
@@ -758,7 +759,7 @@ export class LivematrixInstance extends InstanceBase<ModuleSchema> {
 			this.talkControlState.latched.set(key.target_id, !latchedBefore)
 		}
 
-		if (wasShortPress && !secondTap && this.doubleTapArmed(key)) {
+		if (wasShortPress && !secondTap && this.doubleTapArmed(key, doubleTapListen)) {
 			this.lastTapAt.set(key.target_id, Date.now())
 			this.talkLatchBeforeTap.set(key.target_id, latchedBefore)
 		}
@@ -771,8 +772,8 @@ export class LivematrixInstance extends InstanceBase<ModuleSchema> {
 	}
 
 	/** Whether this key takes the double-tap gesture at all. */
-	private doubleTapArmed(key: KeyConfig): boolean {
-		return key.can_talk && key.can_listen
+	private doubleTapArmed(key: KeyConfig, enabled: boolean): boolean {
+		return enabled && key.can_talk && key.can_listen
 	}
 
 	/**
@@ -781,8 +782,8 @@ export class LivematrixInstance extends InstanceBase<ModuleSchema> {
 	 * Only combined keys qualify: on a talk-only key there is nothing to switch,
 	 * and swallowing the second tap's latch would just make the key feel broken.
 	 */
-	private takeDoubleTap(key: KeyConfig): boolean {
-		if (!this.doubleTapArmed(key)) return false
+	private takeDoubleTap(key: KeyConfig, enabled: boolean): boolean {
+		if (!this.doubleTapArmed(key, enabled)) return false
 
 		const previous = this.lastTapAt.get(key.target_id)
 		if (previous === undefined || Date.now() - previous > DOUBLE_TAP_WINDOW_MS) return false

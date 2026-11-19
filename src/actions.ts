@@ -3,6 +3,7 @@ import type { LivematrixInstance } from './index.js'
 import { MAX_LISTEN_LEVEL_DB, MIN_LISTEN_LEVEL_DB } from './levels.js'
 import {
 	getAlsoSelectOption,
+	getDoubleTapListenOption,
 	getHoldSelectsOption,
 	getKeySelectorOptions,
 	getPressBehaviourOption,
@@ -33,8 +34,8 @@ type PressOptions = KeySelectorOptions & {
 
 export type ActionsSchema = {
 	select_key: { options: KeySelectorOptions }
-	talk_down: { options: PressOptions }
-	talk_up: { options: KeySelectorOptions & { press_behaviour: PressBehaviour } }
+	talk_down: { options: PressOptions & { double_tap_listen: boolean } }
+	talk_up: { options: KeySelectorOptions & { press_behaviour: PressBehaviour; double_tap_listen: boolean } }
 	talk_set: { options: KeySelectorOptions & { mode: SetMode } }
 	listen_down: { options: PressOptions }
 	listen_up: { options: KeySelectorOptions & { press_behaviour: PressBehaviour } }
@@ -69,22 +70,27 @@ export function UpdateActions(self: LivematrixInstance): void {
 				getPressBehaviourOption(),
 				getHoldSelectsOption(false),
 				getAlsoSelectOption(),
+				{
+					...getDoubleTapListenOption(),
+					tooltip:
+						'On a key that can both talk and listen, the press waits a moment before it opens the mic, so two quick taps can switch listening without talking. Turn off, together with the same option on "Talk key up", to open the mic on the press.',
+				},
 			],
 			callback: async (action) => {
 				const key = self.resolveKey(action.options)
 				if (!key) return
 				self.applySelectOptions(action.controlId, key, action.options)
-				self.onTalkDown(key, readPressBehaviour(action.options))
+				self.onTalkDown(key, readPressBehaviour(action.options), action.options.double_tap_listen !== false)
 			},
 		},
 		talk_up: {
 			name: 'Talk key up',
-			options: [...getKeySelectorOptions(keys), getPressBehaviourOption()],
+			options: [...getKeySelectorOptions(keys), getPressBehaviourOption(), getDoubleTapListenOption()],
 			callback: async (action) => {
 				self.endSelectHold(action.controlId)
 				const key = self.resolveKey(action.options)
 				if (!key) return
-				self.onTalkUp(key, readPressBehaviour(action.options))
+				self.onTalkUp(key, readPressBehaviour(action.options), action.options.double_tap_listen !== false)
 			},
 		},
 		talk_set: {

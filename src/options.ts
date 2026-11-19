@@ -152,6 +152,23 @@ export function getAlsoSelectOption(): CompanionInputFieldCheckbox<'also_select'
 	}
 }
 
+/**
+ * On a key that can both talk and listen, two quick taps toggle listen. Talk
+ * key down and Talk key up both carry it: the press needs it to know whether to
+ * hold the mic closed for a moment, the release to know whether to look for a
+ * second tap.
+ */
+export function getDoubleTapListenOption(): CompanionInputFieldCheckbox<'double_tap_listen'> {
+	return {
+		type: 'checkbox' as const,
+		id: 'double_tap_listen',
+		label: 'Double tap switches listening',
+		tooltip:
+			'On a key that can both talk and listen, two quick taps toggle listen instead of leaving talk latched. Ignored on talk-only keys.',
+		default: true,
+	}
+}
+
 export function getSetModeOption<T extends string>(id: T): CompanionInputFieldDropdown<T> {
 	return {
 		type: 'dropdown' as const,
