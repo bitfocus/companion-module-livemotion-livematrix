@@ -5,7 +5,7 @@
 	"name": "livemotion-livematrix",
 	"shortname": "livematrix",
 	"description": "Control livematrix talk and listen keys and the microphone mute",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"license": "MIT",
 	"repository": "git+https://github.com/bitfocus/companion-module-livemotion-livematrix.git",
 	"bugs": "https://github.com/bitfocus/companion-module-livemotion-livematrix/issues",
