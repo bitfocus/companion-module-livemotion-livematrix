@@ -77,6 +77,27 @@ describe('connection', () => {
 		expect(instance.statuses.map((status: any) => status.status)).not.toContain('authentication_failure')
 	})
 
+	it('shows why the connection failed rather than a bare disconnect', async () => {
+		await start('server')
+		await waitFor(() => instance.status?.status === 'ok', 'login')
+		await fake.close()
+		await waitFor(() => instance.statuses.length > 6, 'several failed attempts')
+		expect(instance.status.status).toBe('connection_failure')
+		expect(instance.status.message).toMatch(/ECONNREFUSED/)
+		expect(instance.statuses.slice(-3).map((status: any) => status.status)).not.toContain('disconnected')
+	})
+
+	it('lets a later failure replace an old login refusal', async () => {
+		await start('server', {
+			refuseLogin: { type: 'login_failure', reason: 'All licences are in use', fatal: false, code: 'license_full' },
+		})
+		await waitFor(() => instance.status?.message === 'All licences are in use (license_full)', 'the refusal')
+		await fake.close()
+		await waitFor(() => /ECONNREFUSED/.test(instance.status?.message ?? ''), 'the new reason')
+		await new Promise((resolve) => setTimeout(resolve, 100))
+		expect(instance.status.message).toMatch(/ECONNREFUSED/)
+	})
+
 	it('stays down after the server ends the session on purpose', async () => {
 		await start('server')
 		await waitFor(() => instance.status?.status === 'ok', 'login')

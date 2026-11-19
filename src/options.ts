@@ -2,7 +2,7 @@ import type {
 	CompanionInputFieldCheckbox,
 	CompanionInputFieldDropdown,
 	CompanionInputFieldNumber,
-	CompanionOptionValues,
+	CompanionPresetOptionValues,
 	CompanionSimplePresetLocalVariable,
 	DropdownChoice,
 	JsonValue,
@@ -12,6 +12,13 @@ import { keyTargetToken, type KeyConfig } from './protocol.js'
 export type SetMode = 'toggle' | 'on' | 'off'
 export type KeySelectionMode = 'index' | 'target' | 'selected'
 export type PressBehaviour = 'auto' | 'momentary' | 'latch'
+
+/** The options every key selector adds to an action or feedback. */
+export type KeySelectorOptions = {
+	selection_mode: KeySelectionMode
+	key_index: number
+	key_target: string
+}
 
 /**
  * The local variable every key preset points at its key with. Held on the
@@ -64,7 +71,11 @@ export function getKeyChoices(keys: KeyConfig[]): DropdownChoice[] {
 
 export function getKeySelectorOptions(
 	keys: KeyConfig[],
-): [CompanionInputFieldDropdown, CompanionInputFieldNumber, CompanionInputFieldDropdown] {
+): [
+	CompanionInputFieldDropdown<'selection_mode'>,
+	CompanionInputFieldNumber<'key_index'>,
+	CompanionInputFieldDropdown<'key_target'>,
+] {
 	return [
 		{
 			type: 'dropdown' as const,
@@ -105,13 +116,14 @@ export function getKeySelectorOptions(
 	]
 }
 
-export function getPressBehaviourOption(): CompanionInputFieldDropdown {
+export function getPressBehaviourOption(): CompanionInputFieldDropdown<'press_behaviour'> {
 	return {
 		type: 'dropdown' as const,
 		id: 'press_behaviour',
 		label: 'Press behaviour',
 		default: 'auto',
 		choices: pressBehaviourChoices,
+		disableAutoExpression: true,
 	}
 }
 
@@ -119,7 +131,7 @@ export function getPressBehaviourOption(): CompanionInputFieldDropdown {
  * Hold the key to make it the selected key while it is held, so the volume
  * controls act on it. Let go and the selection goes back to what it was.
  */
-export function getHoldSelectsOption(defaultValue: boolean): CompanionInputFieldCheckbox {
+export function getHoldSelectsOption(defaultValue: boolean): CompanionInputFieldCheckbox<'hold_selects'> {
 	return {
 		type: 'checkbox' as const,
 		id: 'hold_selects',
@@ -131,7 +143,7 @@ export function getHoldSelectsOption(defaultValue: boolean): CompanionInputField
 }
 
 /** Make the key the selected one on every press, and leave it selected afterwards. */
-export function getAlsoSelectOption(): CompanionInputFieldCheckbox {
+export function getAlsoSelectOption(): CompanionInputFieldCheckbox<'also_select'> {
 	return {
 		type: 'checkbox' as const,
 		id: 'also_select',
@@ -140,22 +152,40 @@ export function getAlsoSelectOption(): CompanionInputFieldCheckbox {
 	}
 }
 
-export function getSetModeOption(id: string): CompanionInputFieldDropdown {
+/**
+ * On a key that can both talk and listen, two quick taps toggle listen. Talk
+ * key down and Talk key up both carry it: the press needs it to know whether to
+ * hold the mic closed for a moment, the release to know whether to look for a
+ * second tap.
+ */
+export function getDoubleTapListenOption(): CompanionInputFieldCheckbox<'double_tap_listen'> {
+	return {
+		type: 'checkbox' as const,
+		id: 'double_tap_listen',
+		label: 'Double tap switches listening',
+		tooltip:
+			'On a key that can both talk and listen, two quick taps toggle listen instead of leaving talk latched. Ignored on talk-only keys.',
+		default: true,
+	}
+}
+
+export function getSetModeOption<T extends string>(id: T): CompanionInputFieldDropdown<T> {
 	return {
 		type: 'dropdown' as const,
 		id,
 		label: 'Mode',
 		default: 'toggle',
 		choices: setModeChoices,
+		disableAutoExpression: true,
 	}
 }
 
-export function readPressBehaviour(options: CompanionOptionValues): PressBehaviour {
-	return (options.press_behaviour as PressBehaviour | undefined) ?? 'auto'
+export function readPressBehaviour(options: { press_behaviour?: PressBehaviour }): PressBehaviour {
+	return options.press_behaviour ?? 'auto'
 }
 
-export function readSetMode(options: CompanionOptionValues): SetMode {
-	return (options.mode as SetMode | undefined) ?? 'toggle'
+export function readSetMode(options: { mode?: SetMode }): SetMode {
+	return options.mode ?? 'toggle'
 }
 
 /**
@@ -164,10 +194,10 @@ export function readSetMode(options: CompanionOptionValues): SetMode {
  */
 export function resolveKey(
 	keys: KeyConfig[],
-	options: CompanionOptionValues,
+	options: Partial<KeySelectorOptions>,
 	selected: () => KeyConfig | undefined,
 ): KeyConfig | undefined {
-	const selectionMode = (options.selection_mode as KeySelectionMode | undefined) ?? 'target'
+	const selectionMode = options.selection_mode ?? 'target'
 	if (selectionMode === 'selected') return selected()
 	if (selectionMode === 'index') {
 		const index = Number(options.key_index ?? 0)
@@ -188,7 +218,10 @@ export function resolveKey(
  * rather than a value baked in here, so every action and feedback on the button
  * follows the one variable and the button is repointed by editing it alone.
  */
-export function presetKeyOptions(keys: KeyConfig[], mode: KeySelectionMode): CompanionOptionValues {
+export function presetKeyOptions(
+	keys: KeyConfig[],
+	mode: KeySelectionMode,
+): CompanionPresetOptionValues<KeySelectorOptions> {
 	return {
 		selection_mode: mode,
 		key_index: mode === 'index' ? expr<number>(`$(local:${KEY_LOCAL_VARIABLE})`) : 0,

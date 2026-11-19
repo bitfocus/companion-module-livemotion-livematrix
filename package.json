@@ -20,8 +20,9 @@
 	"scripts": {
 		"postinstall": "husky",
 		"format": "prettier -w .",
-		"build": "rimraf dist && tsc --project tsconfig.build.json",
-		"watch": "tsc --project tsconfig.build.json --watch",
+		"build": "rimraf dist && run build:main",
+		"build:main": "tsc -p tsconfig.build.json",
+		"dev": "tsc -p tsconfig.build.json --watch",
 		"package": "run build && companion-module-build",
 		"lint:raw": "eslint",
 		"lint": "run lint:raw .",
@@ -32,7 +33,7 @@
 		"yarn": "^4"
 	},
 	"dependencies": {
-		"@companion-module/base": "^2.2.1",
+		"@companion-module/base": "~2.2.1",
 		"ws": "^8.22.0"
 	},
 	"devDependencies": {

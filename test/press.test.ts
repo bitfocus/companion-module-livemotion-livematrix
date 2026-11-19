@@ -138,3 +138,43 @@ describe('releasing a press', () => {
 		expect(await instance.runFeedback('listen_active', byTarget(FEED_KEY))).toBe(true)
 	})
 })
+
+describe('a talk press', () => {
+	let fake: FakeLivematrix
+	let instance: any
+
+	beforeEach(async () => {
+		fake = new FakeLivematrix('server')
+		instance = await startInstance(LivematrixInstance, fake)
+		await waitFor(() => instance.values.key_count === 1, 'the keys')
+	})
+
+	afterEach(async () => {
+		await instance.destroy()
+		await fake.close()
+	})
+
+	const talkStates = () => fake.sent('set_key_state').filter((message) => message.field === 'talk')
+
+	it('opens the mic at once on a button that does not double tap', async () => {
+		await instance.runAction('talk_down', { ...byTarget(USER_KEY), press_behaviour: 'auto', double_tap_listen: false })
+		await sleep(40)
+		expect(talkStates()).toMatchObject([{ hold: 'momentary', active: true }])
+	})
+
+	it('waits before opening the mic on a button that double taps', async () => {
+		await instance.runAction('talk_down', { ...byTarget(USER_KEY), press_behaviour: 'auto', double_tap_listen: true })
+		await sleep(40)
+		expect(talkStates()).toEqual([])
+		await sleep(200)
+		expect(talkStates()).toMatchObject([{ hold: 'momentary', active: true }])
+	})
+
+	it('still waiting when the connection goes away, never lands', async () => {
+		await instance.runAction('talk_down', { ...byTarget(USER_KEY), press_behaviour: 'auto', double_tap_listen: true })
+		await instance.destroy()
+		await sleep(300)
+		expect(instance.heartbeatTimer).toBeUndefined()
+		expect(instance.heldKeys.size).toBe(0)
+	})
+})
