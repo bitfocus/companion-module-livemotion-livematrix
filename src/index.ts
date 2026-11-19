@@ -1,46 +1,20 @@
-import {
-	InstanceBase,
-	InstanceStatus,
-	type CompanionActionDefinitions,
-	type CompanionFeedbackDefinitions,
-	type CompanionOptionValues,
-	type CompanionVariableDefinitions,
-	type CompanionVariableValues,
-	type SomeCompanionConfigField,
-} from '@companion-module/base'
+import { InstanceBase, InstanceStatus, type SomeCompanionConfigField } from '@companion-module/base'
 import {
 	buildWebSocketUrl,
 	getConfigFields,
 	validateConfig,
 	type LivematrixConfig,
-	type LivematrixManifest,
 	type LivematrixSecrets,
 } from './config.js'
 import { ActivityStore } from './activity.js'
-import { ACCENT_HIGH, INCOMING, LISTEN_ON, MIC_MUTED_FILL, NAME_OFFLINE, TALK_ON, TEXT, WARN } from './brand.js'
+import { MIC_MOVE_NEXT, UpdateActions, deviceLabel, type ActionsSchema } from './actions.js'
+import { UpdateFeedbacks, type FeedbacksSchema } from './feedbacks.js'
 import { LivematrixConnection } from './connection.js'
 import { KeyStateStore } from './key-state.js'
-import {
-	MAX_LISTEN_LEVEL_DB,
-	MIN_LISTEN_LEVEL_DB,
-	clampListenLevelLinear,
-	dbToLinear,
-	formatListenLevelDb,
-	sanitizeName,
-} from './levels.js'
-import {
-	getAlsoSelectOption,
-	getHoldSelectsOption,
-	getKeySelectorOptions,
-	getPressBehaviourOption,
-	getSetModeOption,
-	readPressBehaviour,
-	readSetMode,
-	resolveKey,
-	type PressBehaviour,
-	type SetMode,
-} from './options.js'
+import { clampListenLevelLinear, dbToLinear, formatListenLevelDb, sanitizeName } from './levels.js'
+import { resolveKey, type KeySelectorOptions, type PressBehaviour, type SetMode } from './options.js'
 import { getPresetDefinitions } from './presets.js'
+import { UpdateVariableDefinitions, type VariablesSchema } from './variables.js'
 import {
 	COMPANION_DEVICE_MODEL,
 	createEmptyMicState,
@@ -67,6 +41,14 @@ import {
 	type UserDisconnectedMessage,
 	type UserInfo,
 } from './protocol.js'
+
+export type ModuleSchema = {
+	config: LivematrixConfig
+	secrets: LivematrixSecrets
+	actions: ActionsSchema
+	feedbacks: FeedbacksSchema
+	variables: VariablesSchema
+}
 
 type LatchMode = 'off' | 'momentary' | 'latched'
 
@@ -113,22 +95,6 @@ const HOLD_SELECT_MS = 0
 const LEVEL_REPEAT_DELAY_MS = 400
 const LEVEL_REPEAT_INTERVAL_MS = 100
 
-/**
- * What a key's name reads as when the button is not pointing at a key: the
- * index is out of range, or the target is one this login does not have. The
- * button still draws, so it has to say that it is aimed at nothing.
- */
-const NO_KEY_NAME = 'N/A'
-
-/** The move-mic choice that hands the mic on to whichever device comes after its holder. */
-const MIC_MOVE_NEXT = 'next'
-
-/** A device as a person would pick it out: its name, and what it runs on. */
-function deviceLabel(device: DeviceInfo): string {
-	const name = device.device_name || device.device_id
-	return device.device_model && device.device_model !== device.device_name ? `${name} (${device.device_model})` : name
-}
-
 /** Fallback until `login_success` tells us what the server actually wants. */
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000
 /**
@@ -147,27 +113,32 @@ function createControlState(): KeyControlState {
 	}
 }
 
-export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
+export class LivematrixInstance extends InstanceBase<ModuleSchema> {
 	config!: LivematrixConfig
 	secrets!: LivematrixSecrets
 	private connection: LivematrixConnection | undefined
 
 	private userId = ''
 	private displayName = ''
-	private keys: KeyConfig[] = []
+	/** The keys this login has, in the order the server lists them. */
+	keys: KeyConfig[] = []
 	private availableUsers: UserInfo[] = []
 	private connectedUsers = new Set<string>()
-	private keyState = new KeyStateStore()
-	private activity = new ActivityStore()
+	readonly keyState = new KeyStateStore()
+	activity = new ActivityStore()
 	/** Puts out the listen stripe's trail when it runs out. */
 	private activityTrailTimer: NodeJS.Timeout | undefined
-	private mic: MicState = createEmptyMicState()
+	mic: MicState = createEmptyMicState()
 	/** This user's devices, as the server last listed them. Includes this panel. */
 	private devices: DeviceInfo[] = []
 	/** The last mic error the server reported, cleared by the next mic state. */
 	private micError = ''
 	/** Why the last login was refused, while we keep retrying it. */
 	private retryReason: string | undefined
+	/** Why the current connection attempt failed, as the socket reported it. */
+	private lastSocketError: string | undefined
+	/** Set once Companion has torn the connection down, so nothing starts up again. */
+	private destroyed = false
 
 	private talkControlState: KeyControlState = createControlState()
 	private listenControlState: KeyControlState = createControlState()
@@ -216,15 +187,18 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 	}
 
 	async destroy(): Promise<void> {
+		this.destroyed = true
+		// Timers first: a press still waiting would otherwise land during the
+		// disconnect and hold its key again, restarting the heartbeat.
+		this.clearTimers()
 		this.clearHolds()
-		this.stopAllLevelRepeats()
-		clearTimeout(this.activityTrailTimer)
 		await this.disconnect()
 	}
 
 	async configUpdated(config: LivematrixConfig, secrets: LivematrixSecrets): Promise<void> {
 		this.config = config
 		this.secrets = secrets
+		this.clearTimers()
 		this.clearHolds()
 		await this.disconnect()
 		this.resetSession()
@@ -249,6 +223,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 			buildWebSocketUrl(this.config),
 			{
 				open: () => {
+					this.lastSocketError = undefined
 					this.updateStatus(InstanceStatus.Connecting)
 					// The client app's control API is already logged in and sends its
 					// snapshot unasked; only the server wants to know who we are.
@@ -260,11 +235,17 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 					this.clearActivity()
 					this.pushVariableValues()
 					if (!reconnecting) return
-					if (this.retryReason) this.updateStatus(InstanceStatus.ConnectionFailure, this.retryReason)
+					// The socket reports an error and then closes; keep the error's
+					// reason on show rather than a bare "Disconnected".
+					const reason = this.retryReason ?? this.lastSocketError
+					if (reason) this.updateStatus(InstanceStatus.ConnectionFailure, reason)
 					else this.updateStatus(InstanceStatus.Disconnected)
 				},
 				error: (message) => {
 					this.log('error', `WebSocket error: ${message}`)
+					this.lastSocketError = message
+					// A refused login from an earlier attempt no longer explains anything.
+					this.retryReason = undefined
 					this.updateStatus(InstanceStatus.ConnectionFailure, message)
 				},
 				warn: (message) => this.log('warn', message),
@@ -350,6 +331,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		// apart on how often a held key has to be restated.
 		this.heartbeatIntervalMs = message.momentary_heartbeat_interval_ms ?? DEFAULT_HEARTBEAT_INTERVAL_MS
 		this.retryReason = undefined
+		this.lastSocketError = undefined
 		this.updateStatus(InstanceStatus.Ok)
 
 		// On the client's control API this would rename the app's own device.
@@ -415,7 +397,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 	private handleDevicesUpdate(message: DevicesUpdateMessage): void {
 		this.devices = message.devices ?? []
 		// The move action lists the devices by name, so its choices follow.
-		this.setActionDefinitions(this.getActionDefinitions())
+		UpdateActions(this)
 	}
 
 	private handleActivityUpdate(message: ActivityUpdateMessage): void {
@@ -491,501 +473,16 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 	}
 
 	private setupDefinitions(): void {
-		this.setActionDefinitions(this.getActionDefinitions())
-		this.setFeedbackDefinitions(this.getFeedbackDefinitions())
+		UpdateActions(this)
+		UpdateFeedbacks(this)
 		const { structure, presets } = getPresetDefinitions(this.keys)
 		this.setPresetDefinitions(structure, presets)
-		this.setVariableDefinitions(this.getVariableDefinitions())
+		UpdateVariableDefinitions(this)
 		this.pushVariableValues()
 	}
 
-	private getActionDefinitions(): CompanionActionDefinitions {
-		return {
-			select_key: {
-				name: 'Select key',
-				description: 'Make this the key that "selected key" actions and feedbacks act on',
-				options: getKeySelectorOptions(this.keys),
-				callback: async (action) => {
-					const key = this.resolveKey(action.options)
-					if (key) this.selectKey(key)
-				},
-			},
-			talk_down: {
-				name: 'Talk key down',
-				options: [
-					...getKeySelectorOptions(this.keys),
-					getPressBehaviourOption(),
-					getHoldSelectsOption(false),
-					getAlsoSelectOption(),
-				],
-				callback: async (action) => {
-					const key = this.resolveKey(action.options)
-					if (!key) return
-					this.applySelectOptions(action.controlId, key, action.options)
-					this.onTalkDown(key, readPressBehaviour(action.options))
-				},
-			},
-			talk_up: {
-				name: 'Talk key up',
-				options: [
-					...getKeySelectorOptions(this.keys),
-					getPressBehaviourOption(),
-					{
-						type: 'checkbox' as const,
-						id: 'double_tap_listen',
-						label: 'Double tap switches listening',
-						tooltip:
-							'On a key that can both talk and listen, two quick taps toggle listen instead of leaving talk latched. Ignored on talk-only keys.',
-						default: true,
-					},
-				],
-				callback: async (action) => {
-					this.endSelectHold(action.controlId)
-					const key = this.resolveKey(action.options)
-					if (!key) return
-					this.onTalkUp(key, readPressBehaviour(action.options), action.options.double_tap_listen !== false)
-				},
-			},
-			talk_set: {
-				name: 'Talk set',
-				options: [...getKeySelectorOptions(this.keys), getSetModeOption('mode')],
-				callback: async (action) => {
-					const key = this.resolveKey(action.options)
-					const mode = readSetMode(action.options)
-					if (key) this.onSetKeyMode(key, 'talk', mode)
-				},
-			},
-			listen_down: {
-				name: 'Listen key down',
-				options: [
-					...getKeySelectorOptions(this.keys),
-					getPressBehaviourOption(),
-					getHoldSelectsOption(true),
-					getAlsoSelectOption(),
-				],
-				callback: async (action) => {
-					const key = this.resolveKey(action.options)
-					if (!key) return
-					this.applySelectOptions(action.controlId, key, action.options)
-					this.onListenDown(key, readPressBehaviour(action.options))
-				},
-			},
-			listen_up: {
-				name: 'Listen key up',
-				options: [...getKeySelectorOptions(this.keys), getPressBehaviourOption()],
-				callback: async (action) => {
-					this.endSelectHold(action.controlId)
-					const key = this.resolveKey(action.options)
-					if (key) this.onListenUp(key, readPressBehaviour(action.options))
-				},
-			},
-			listen_set: {
-				name: 'Listen set',
-				options: [...getKeySelectorOptions(this.keys), getSetModeOption('mode')],
-				callback: async (action) => {
-					const key = this.resolveKey(action.options)
-					const mode = readSetMode(action.options)
-					if (key) this.onSetKeyMode(key, 'listen', mode)
-				},
-			},
-			listen_level: {
-				name: 'Set listen level',
-				options: [
-					...getKeySelectorOptions(this.keys),
-					{
-						type: 'number' as const,
-						id: 'level',
-						label: `Level dB (${MIN_LISTEN_LEVEL_DB} to +${MAX_LISTEN_LEVEL_DB})`,
-						default: 0,
-						min: MIN_LISTEN_LEVEL_DB,
-						max: MAX_LISTEN_LEVEL_DB,
-						step: 0.1,
-						range: false,
-					},
-				],
-				callback: async (action) => {
-					const key = this.resolveKey(action.options)
-					const levelDb = Number(action.options.level ?? 0)
-					if (key) this.onListenLevelSetDb(key, levelDb)
-				},
-			},
-			listen_level_delta: {
-				name: 'Change listen level by dB',
-				options: [
-					...getKeySelectorOptions(this.keys),
-					{
-						type: 'number' as const,
-						id: 'delta_db',
-						label: 'Delta dB',
-						default: 1,
-						min: -60,
-						max: 60,
-						step: 0.1,
-						range: false,
-					},
-				],
-				callback: async (action) => {
-					const key = this.resolveKey(action.options)
-					const deltaDb = Number(action.options.delta_db ?? 1)
-					if (key) this.onListenLevelAdjustDb(key, deltaDb)
-				},
-			},
-			listen_level_hold: {
-				name: 'Change listen level while held',
-				description:
-					'Step the level once, then keep stepping for as long as the button is held. Put "Stop changing listen level" on the release.',
-				options: [
-					...getKeySelectorOptions(this.keys),
-					{
-						type: 'number' as const,
-						id: 'delta_db',
-						label: 'Step dB',
-						default: 1,
-						min: -60,
-						max: 60,
-						step: 0.1,
-						range: false,
-					},
-				],
-				callback: async (action) => {
-					const key = this.resolveKey(action.options)
-					const deltaDb = Number(action.options.delta_db ?? 1)
-					if (key) this.startLevelRepeat(action.controlId, key, deltaDb)
-				},
-			},
-			listen_level_hold_stop: {
-				name: 'Stop changing listen level',
-				description: 'Ends a "Change listen level while held" started from this button',
-				options: [],
-				callback: async (action) => {
-					this.stopLevelRepeat(action.controlId)
-				},
-			},
-			mic_mute: {
-				name: 'Mute microphone',
-				description: 'Mute the mic on whichever device holds it',
-				options: [],
-				callback: async () => {
-					this.onSetMicMuted(true)
-				},
-			},
-			mic_unmute: {
-				name: 'Unmute microphone',
-				description:
-					'Unmute the mic. If the device holding it is gone, the server hands it to the device that held it most recently.',
-				options: [],
-				callback: async () => {
-					this.onSetMicMuted(false)
-				},
-			},
-			mic_toggle: {
-				name: 'Toggle microphone mute',
-				description: 'Mute a live mic, or unmute a muted one',
-				options: [],
-				callback: async () => {
-					this.onMicToggle()
-				},
-			},
-			mic_move: {
-				name: 'Move microphone to device',
-				description:
-					"Hand this user's mic to another of their devices, unmuted. This needs a direct server connection, because a client app's control API cannot move the mic.",
-				options: [
-					{
-						type: 'dropdown' as const,
-						id: 'device',
-						label: 'Device',
-						default: MIC_MOVE_NEXT,
-						choices: [
-							{ id: MIC_MOVE_NEXT, label: 'Next device' },
-							...this.micDevices().map((device) => ({
-								id: device.device_id,
-								label: deviceLabel(device),
-							})),
-						],
-						// A device that is offline right now is still worth keeping
-						// on the button: it moves the mic once the device is back.
-						allowInvalidValues: true,
-					},
-				],
-				callback: async (action) => {
-					const device = action.options.device
-					this.onMicMove(typeof device === 'string' ? device : MIC_MOVE_NEXT)
-				},
-			},
-		}
-	}
-
-	private getFeedbackDefinitions(): CompanionFeedbackDefinitions {
-		return {
-			talk_active: {
-				type: 'boolean',
-				name: 'Talk active',
-				defaultStyle: {
-					bgcolor: TALK_ON,
-					color: TEXT,
-				},
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => {
-					const key = this.resolveKey(feedback.options)
-					return key ? this.keyState.talk(key) : false
-				},
-			},
-			listen_active: {
-				type: 'boolean',
-				name: 'Listen active',
-				defaultStyle: {
-					bgcolor: LISTEN_ON,
-					color: TEXT,
-				},
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => {
-					const key = this.resolveKey(feedback.options)
-					return key ? this.keyState.listen(key) : false
-				},
-			},
-			talk_latched: {
-				type: 'boolean',
-				name: 'Talk latched',
-				description: 'Talk is on and holding itself, rather than being held down',
-				defaultStyle: {
-					bgcolor: TALK_ON,
-					color: TEXT,
-				},
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => {
-					const key = this.resolveKey(feedback.options)
-					return key ? this.getLatchMode(key, 'talk') === 'latched' : false
-				},
-			},
-			talk_momentary: {
-				type: 'boolean',
-				name: 'Talk held (momentary)',
-				description: 'Talk is on only for as long as the key is held',
-				defaultStyle: {
-					bgcolor: TALK_ON,
-					color: TEXT,
-				},
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => {
-					const key = this.resolveKey(feedback.options)
-					return key ? this.getLatchMode(key, 'talk') === 'momentary' : false
-				},
-			},
-			listen_latched: {
-				type: 'boolean',
-				name: 'Listen latched',
-				description: 'Listen is on and holding itself, rather than being held down',
-				defaultStyle: {
-					bgcolor: LISTEN_ON,
-					color: TEXT,
-				},
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => {
-					const key = this.resolveKey(feedback.options)
-					return key ? this.getLatchMode(key, 'listen') === 'latched' : false
-				},
-			},
-			listen_momentary: {
-				type: 'boolean',
-				name: 'Listen held (momentary)',
-				description: 'Listen is on only for as long as the key is held',
-				defaultStyle: {
-					bgcolor: LISTEN_ON,
-					color: TEXT,
-				},
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => {
-					const key = this.resolveKey(feedback.options)
-					return key ? this.getLatchMode(key, 'listen') === 'momentary' : false
-				},
-			},
-			key_selected: {
-				type: 'boolean',
-				name: 'Key is selected',
-				defaultStyle: {
-					color: ACCENT_HIGH,
-				},
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => {
-					const key = this.resolveKey(feedback.options)
-					if (!key) return false
-					return keyTargetToken(key) === this.selectedKeyToken()
-				},
-			},
-			key_listen_level_db: {
-				type: 'value',
-				name: 'Listen level (dB)',
-				description: 'The listen level as a number, for driving a gauge or text',
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => {
-					const key = this.resolveKey(feedback.options)
-					if (!key) return MIN_LISTEN_LEVEL_DB
-					return Number(this.keyState.levelDb(key).toFixed(1))
-				},
-			},
-			key_found: {
-				type: 'value',
-				name: 'Key found',
-				description:
-					'Whether the key selector points at a key this login has. For "Selected key", whether any key is selected right now.',
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => this.resolveKey(feedback.options) !== undefined,
-			},
-			key_name: {
-				type: 'value',
-				name: 'Key display name',
-				description: 'The name of the key, for use as button text',
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => {
-					const key = this.resolveKey(feedback.options)
-					return key ? key.display_name : NO_KEY_NAME
-				},
-			},
-			user_connected: {
-				type: 'boolean',
-				name: 'User connected',
-				defaultStyle: {
-					color: TEXT,
-				},
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => {
-					const key = this.resolveKey(feedback.options)
-					return key ? this.isKeyUserConnected(key) : false
-				},
-			},
-			user_disconnected: {
-				type: 'boolean',
-				name: 'User disconnected',
-				defaultStyle: {
-					color: NAME_OFFLINE,
-				},
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => {
-					const key = this.resolveKey(feedback.options)
-					return key ? !this.isKeyUserConnected(key) : false
-				},
-			},
-			listening_to_me: {
-				type: 'boolean',
-				name: 'Listening to you',
-				description: 'Someone this key reaches is listening to you. A group key counts its members.',
-				defaultStyle: {
-					color: INCOMING,
-				},
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => {
-					const key = this.resolveKey(feedback.options)
-					return key ? this.activity.isListeningToMe(key) : false
-				},
-			},
-			audio_arriving: {
-				type: 'boolean',
-				name: 'Audio arriving',
-				description: 'Audio from what this key points at is reaching you right now, whether or not you listen',
-				defaultStyle: {
-					color: INCOMING,
-				},
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => {
-					const key = this.resolveKey(feedback.options)
-					return key ? this.activity.isAudioArriving(key) : false
-				},
-			},
-			audio_recent: {
-				type: 'boolean',
-				name: 'Audio arrived recently',
-				description: 'Audio from what this key points at stopped within the last minute',
-				defaultStyle: {
-					color: INCOMING,
-				},
-				options: getKeySelectorOptions(this.keys),
-				callback: async (feedback) => {
-					const key = this.resolveKey(feedback.options)
-					return key ? this.activity.isAudioTrailing(key, Date.now()) : false
-				},
-			},
-			mic_muted: {
-				type: 'boolean',
-				name: 'Microphone muted',
-				description: 'On while the mic is muted, or while no device holds it',
-				defaultStyle: {
-					bgcolor: MIC_MUTED_FILL,
-					color: WARN,
-				},
-				options: [],
-				callback: async () => !this.isMicUnmuted(),
-			},
-			mic_device_name: {
-				type: 'value',
-				name: 'Device holding the microphone',
-				description: 'Its name, or nothing while no device holds the mic',
-				options: [],
-				callback: async () => this.mic.device_name ?? this.mic.device_id ?? '',
-			},
-			mic_live: {
-				type: 'boolean',
-				name: 'Microphone live',
-				description:
-					'On while audio is going out, either because the mic is unmuted or because a talk key is held through the mute',
-				defaultStyle: {
-					bgcolor: LISTEN_ON,
-					color: TEXT,
-				},
-				options: [],
-				callback: async () => this.isMicOpen(),
-			},
-		}
-	}
-
-	private getVariableDefinitions(): CompanionVariableDefinitions {
-		const variables: CompanionVariableDefinitions = {
-			user_id: { name: 'Logged-in user ID' },
-			display_name: { name: 'Logged-in display name' },
-			connected: { name: 'Connected' },
-			mic_muted: { name: 'Microphone muted (or held by no device)' },
-			mic_device: { name: 'Device holding the microphone' },
-			mic_holder_online: { name: 'Device holding the microphone is online' },
-			mic_open: { name: 'Microphone sending audio (unmuted, or talking through the mute)' },
-			mic_error: { name: 'Last microphone error' },
-			key_count: { name: 'Key count' },
-			selected_key_index: { name: 'Selected key index' },
-			selected_key_name: { name: 'Selected key display name' },
-			selected_key_target_id: { name: 'Selected key target ID' },
-			selected_key_talk: { name: 'Selected key talk active' },
-			selected_key_listen: { name: 'Selected key listen active' },
-			selected_key_level: { name: 'Selected key listen level dB' },
-		}
-
-		const seenTargetNames = new Set<string>()
-		for (const [index, key] of this.keys.entries()) {
-			variables[`key_${index}_name`] = { name: `Key ${index} display name` }
-			variables[`key_${index}_target_type`] = { name: `Key ${index} target type` }
-			variables[`key_${index}_target_id`] = { name: `Key ${index} target ID` }
-			variables[`key_${index}_talk`] = { name: `Key ${index} talk active` }
-			variables[`key_${index}_listen`] = { name: `Key ${index} listen active` }
-			variables[`key_${index}_level`] = { name: `Key ${index} listen level dB` }
-			variables[`key_${index}_talk_mode`] = { name: `Key ${index} talk mode (off/momentary/latched)` }
-			variables[`key_${index}_listen_mode`] = { name: `Key ${index} listen mode (off/momentary/latched)` }
-			variables[`tid_${key.target_id}_name`] = { name: `${key.display_name} name` }
-			variables[`tid_${key.target_id}_talk`] = { name: `${key.display_name} talk active` }
-			variables[`tid_${key.target_id}_listen`] = { name: `${key.display_name} listen active` }
-			variables[`tid_${key.target_id}_level`] = { name: `${key.display_name} listen level dB` }
-
-			const sanitized = sanitizeName(key.display_name)
-			if (!seenTargetNames.has(sanitized)) {
-				seenTargetNames.add(sanitized)
-				variables[`target_${sanitized}_talk`] = { name: `${key.display_name} talk active` }
-				variables[`target_${sanitized}_listen`] = { name: `${key.display_name} listen active` }
-				variables[`target_${sanitized}_level`] = { name: `${key.display_name} listen level dB` }
-			}
-		}
-
-		return variables
-	}
-
 	private pushVariableValues(): void {
-		const values: CompanionVariableValues = {
+		const values: Partial<VariablesSchema> = {
 			user_id: this.userId,
 			display_name: this.displayName,
 			connected: this.isConnected(),
@@ -1037,7 +534,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		this.setVariableValues(values)
 	}
 
-	private resolveKey(options: CompanionOptionValues): KeyConfig | undefined {
+	resolveKey(options: Partial<KeySelectorOptions>): KeyConfig | undefined {
 		return resolveKey(this.keys, options, () => this.getSelectedKey())
 	}
 
@@ -1056,7 +553,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		return find(this.pinnedKeyToken)
 	}
 
-	private selectedKeyToken(): string | undefined {
+	selectedKeyToken(): string | undefined {
 		const key = this.getSelectedKey()
 		return key ? keyTargetToken(key) : undefined
 	}
@@ -1068,14 +565,18 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		if (this.selectedKeyToken() !== before) this.onSelectionChanged()
 	}
 
-	private selectKey(key: KeyConfig): void {
+	selectKey(key: KeyConfig): void {
 		this.changeSelection(() => {
 			this.pinnedKeyToken = keyTargetToken(key)
 		})
 	}
 
 	/** What a key press does to the selection, as its options ask. */
-	private applySelectOptions(controlId: string, key: KeyConfig, options: CompanionOptionValues): void {
+	applySelectOptions(
+		controlId: string,
+		key: KeyConfig,
+		options: { also_select?: boolean; hold_selects?: boolean },
+	): void {
 		if (options.also_select === true) this.selectKey(key)
 		if (options.hold_selects === true) this.startSelectHold(controlId, key)
 	}
@@ -1102,7 +603,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 	}
 
 	/** Let go of whatever selection this button was holding, if any. */
-	private endSelectHold(controlId: string): void {
+	endSelectHold(controlId: string): void {
 		const timer = this.selectHoldTimers.get(controlId)
 		if (timer) {
 			clearTimeout(timer)
@@ -1120,7 +621,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		this.pushVariableValues()
 	}
 
-	private onTalkDown(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
+	onTalkDown(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
 		if (!key.can_talk) return
 
 		// Latch-only keys toggle on the press and never hold, so there is nothing
@@ -1147,7 +648,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		// On a key that double taps, hold the mic closed for a moment. A tap
 		// quick enough to be half of a double tap is over before this fires, so
 		// the gesture never opens the mic or lights the key at all.
-		if (PRESS_SETTLE_MS > 0 && this.doubleTapArmedForKey(key)) {
+		if (PRESS_SETTLE_MS > 0 && this.doubleTapArmed(key)) {
 			this.pressTimers.set(
 				key.target_id,
 				setTimeout(() => {
@@ -1196,7 +697,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		return true
 	}
 
-	private onTalkUp(key: KeyConfig, behaviour: PressBehaviour = 'auto', doubleTapListen = true): void {
+	onTalkUp(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
 		if (!key.can_talk) return
 		if (this.latchesOnPress(key, 'talk', behaviour)) return
 
@@ -1220,18 +721,18 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		// Hold a tap's talk state back briefly in case a second tap follows. The
 		// press stays held meanwhile, so a plain tap that turns into a latch has
 		// no gap in it, and one that turns into a double tap never latches.
-		if (wasShortPress && this.doubleTapArmed(key, doubleTapListen)) {
+		if (wasShortPress && this.doubleTapArmed(key)) {
 			this.settleTimers.set(
 				key.target_id,
 				setTimeout(() => {
 					this.settleTimers.delete(key.target_id)
-					this.commitTalkRelease(key, behaviour, wasShortPress, latchedBefore, doubleTapListen)
+					this.commitTalkRelease(key, behaviour, wasShortPress, latchedBefore)
 				}, DOUBLE_TAP_SETTLE_MS),
 			)
 			return
 		}
 
-		this.commitTalkRelease(key, behaviour, wasShortPress, latchedBefore, doubleTapListen)
+		this.commitTalkRelease(key, behaviour, wasShortPress, latchedBefore)
 	}
 
 	/**
@@ -1242,7 +743,6 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		behaviour: PressBehaviour,
 		wasShortPress: boolean,
 		latchedBefore: boolean,
-		doubleTapListen: boolean,
 	): void {
 		this.pressApplied.delete(key.target_id)
 		this.talkControlState.pressing.set(key.target_id, false)
@@ -1250,7 +750,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		// A late second tap - one that arrived after the settle window, so the
 		// first tap had already latched - still switches listening, and puts talk
 		// back where that first tap found it.
-		const secondTap = wasShortPress && this.takeDoubleTap(key, doubleTapListen)
+		const secondTap = wasShortPress && this.takeDoubleTap(key)
 		if (secondTap) {
 			this.talkControlState.latched.set(key.target_id, this.talkLatchBeforeTap.get(key.target_id) ?? false)
 			this.talkLatchBeforeTap.delete(key.target_id)
@@ -1258,7 +758,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 			this.talkControlState.latched.set(key.target_id, !latchedBefore)
 		}
 
-		if (wasShortPress && !secondTap && this.doubleTapArmed(key, doubleTapListen)) {
+		if (wasShortPress && !secondTap && this.doubleTapArmed(key)) {
 			this.lastTapAt.set(key.target_id, Date.now())
 			this.talkLatchBeforeTap.set(key.target_id, latchedBefore)
 		}
@@ -1271,11 +771,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 	}
 
 	/** Whether this key takes the double-tap gesture at all. */
-	private doubleTapArmed(key: KeyConfig, enabled: boolean): boolean {
-		return enabled && this.doubleTapArmedForKey(key)
-	}
-
-	private doubleTapArmedForKey(key: KeyConfig): boolean {
+	private doubleTapArmed(key: KeyConfig): boolean {
 		return key.can_talk && key.can_listen
 	}
 
@@ -1285,8 +781,8 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 	 * Only combined keys qualify: on a talk-only key there is nothing to switch,
 	 * and swallowing the second tap's latch would just make the key feel broken.
 	 */
-	private takeDoubleTap(key: KeyConfig, enabled: boolean): boolean {
-		if (!this.doubleTapArmed(key, enabled)) return false
+	private takeDoubleTap(key: KeyConfig): boolean {
+		if (!this.doubleTapArmed(key)) return false
 
 		const previous = this.lastTapAt.get(key.target_id)
 		if (previous === undefined || Date.now() - previous > DOUBLE_TAP_WINDOW_MS) return false
@@ -1295,7 +791,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		return true
 	}
 
-	private onListenDown(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
+	onListenDown(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
 		if (!key.can_listen) return
 
 		if (this.latchesOnPress(key, 'listen', behaviour)) {
@@ -1308,7 +804,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		this.setListenActive(key, this.getEffectiveState(this.listenControlState, key.target_id))
 	}
 
-	private onListenUp(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
+	onListenUp(key: KeyConfig, behaviour: PressBehaviour = 'auto'): void {
 		if (!key.can_listen) return
 
 		if (this.latchesOnPress(key, 'listen', behaviour)) return
@@ -1363,13 +859,13 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 	}
 
 	/** Whether a key is off, held down momentarily, or latched on. */
-	private getLatchMode(key: KeyConfig, kind: KeyField): LatchMode {
+	getLatchMode(key: KeyConfig, kind: KeyField): LatchMode {
 		const active = kind === 'talk' ? this.keyState.talk(key) : this.keyState.listen(key)
 		if (!active) return 'off'
 		return this.keyState.isLatched(key, kind) ? 'latched' : 'momentary'
 	}
 
-	private onSetKeyMode(key: KeyConfig, kind: 'talk' | 'listen', mode: SetMode): void {
+	onSetKeyMode(key: KeyConfig, kind: 'talk' | 'listen', mode: SetMode): void {
 		if (kind === 'talk' && !key.can_talk) return
 		if (kind === 'listen' && !key.can_listen) return
 
@@ -1405,7 +901,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		}
 	}
 
-	private onListenLevelSetDb(key: KeyConfig, levelDb: number): void {
+	onListenLevelSetDb(key: KeyConfig, levelDb: number): void {
 		if (!key.can_listen) return
 		const linearLevel = clampListenLevelLinear(dbToLinear(levelDb))
 		this.keyState.setLevel(key, linearLevel)
@@ -1414,7 +910,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		this.checkFeedbacks('key_listen_level_db')
 	}
 
-	private onListenLevelAdjustDb(key: KeyConfig, deltaDb: number): void {
+	onListenLevelAdjustDb(key: KeyConfig, deltaDb: number): void {
 		if (!key.can_listen) return
 		const nextLevelDb = this.keyState.levelDb(key) + deltaDb
 		this.onListenLevelSetDb(key, nextLevelDb)
@@ -1425,7 +921,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 	 * we last asked for rather than the last one the server echoed, so an echo
 	 * still in flight cannot hold the ramp back. Stops by itself at either end.
 	 */
-	private startLevelRepeat(controlId: string, key: KeyConfig, deltaDb: number): void {
+	startLevelRepeat(controlId: string, key: KeyConfig, deltaDb: number): void {
 		this.stopLevelRepeat(controlId)
 		let levelDb = this.keyState.levelDb(key)
 
@@ -1448,7 +944,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		this.levelRepeats.set(controlId, setTimeout(repeat, LEVEL_REPEAT_DELAY_MS))
 	}
 
-	private stopLevelRepeat(controlId: string): void {
+	stopLevelRepeat(controlId: string): void {
 		const timer = this.levelRepeats.get(controlId)
 		if (!timer) return
 		clearTimeout(timer)
@@ -1460,7 +956,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		this.levelRepeats.clear()
 	}
 
-	private onSetMicMuted(muted: boolean): void {
+	onSetMicMuted(muted: boolean): void {
 		// A fresh attempt: the server says again if it still cannot.
 		if (this.micError) {
 			this.micError = ''
@@ -1473,7 +969,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 	 * Resolved here from the last mic state rather than sent as a toggle: the
 	 * server may replay a message, and a replayed toggle would undo itself.
 	 */
-	private onMicToggle(): void {
+	onMicToggle(): void {
 		this.onSetMicMuted(this.isMicUnmuted())
 	}
 
@@ -1481,13 +977,13 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 	 * The devices the mic can go to: this user's, less any Companion panel,
 	 * which has no microphone. In a stable order, so "next" walks them in turn.
 	 */
-	private micDevices(): DeviceInfo[] {
+	micDevices(): DeviceInfo[] {
 		return this.devices
 			.filter((device) => device.device_model !== COMPANION_DEVICE_MODEL)
 			.sort((a, b) => deviceLabel(a).localeCompare(deviceLabel(b)) || a.device_id.localeCompare(b.device_id))
 	}
 
-	private onMicMove(target: string): void {
+	onMicMove(target: string): void {
 		if (this.config.connection_mode !== 'server') {
 			this.log('warn', 'Moving the mic needs a direct server connection, because the client control API cannot move it')
 			return
@@ -1507,12 +1003,12 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 	 * Whether some device holds the mic and it is not muted. What mute and toggle
 	 * act on: a held talk key opens a muted mic without unmuting it.
 	 */
-	private isMicUnmuted(): boolean {
+	isMicUnmuted(): boolean {
 		return this.mic.device_id !== null && !this.mic.muted
 	}
 
 	/** Whether some device holds the mic and is sending audio through it. */
-	private isMicOpen(): boolean {
+	isMicOpen(): boolean {
 		return this.mic.device_id !== null && this.mic.open
 	}
 
@@ -1606,7 +1102,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 
 	/** Run the heartbeat exactly while something is held, and no longer. */
 	private syncHeartbeat(): void {
-		if (this.heldKeys.size === 0) {
+		if (this.destroyed || this.heldKeys.size === 0) {
 			if (this.heartbeatTimer) {
 				clearInterval(this.heartbeatTimer)
 				this.heartbeatTimer = undefined
@@ -1635,7 +1131,7 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 	 * Only users log in and out. Party lines and groups are always there, so they
 	 * always read as connected rather than fading away.
 	 */
-	private isKeyUserConnected(key: KeyConfig): boolean {
+	isKeyUserConnected(key: KeyConfig): boolean {
 		if (key.target_type !== 'user') return true
 		return this.connectedUsers.has(key.target_id)
 	}
@@ -1648,6 +1144,19 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		return this.connection?.isOpen ?? false
 	}
 
+	/** Stop every one-shot and repeating timer that could act on a key later. */
+	private clearTimers(): void {
+		for (const timer of this.settleTimers.values()) clearTimeout(timer)
+		this.settleTimers.clear()
+		for (const timer of this.pressTimers.values()) clearTimeout(timer)
+		this.pressTimers.clear()
+		for (const timer of this.selectHoldTimers.values()) clearTimeout(timer)
+		this.selectHoldTimers.clear()
+		this.stopAllLevelRepeats()
+		clearTimeout(this.activityTrailTimer)
+		this.activityTrailTimer = undefined
+	}
+
 	private resetSession(): void {
 		this.userId = ''
 		this.displayName = ''
@@ -1655,19 +1164,12 @@ export class LivematrixInstance extends InstanceBase<LivematrixManifest> {
 		this.availableUsers = []
 		this.connectedUsers.clear()
 		this.keyState.reset()
-		clearTimeout(this.activityTrailTimer)
-		this.activityTrailTimer = undefined
 		this.activity = new ActivityStore()
 		this.retryReason = undefined
+		this.lastSocketError = undefined
 		this.lastTapAt.clear()
 		this.talkLatchBeforeTap.clear()
-		for (const timer of this.settleTimers.values()) clearTimeout(timer)
-		this.settleTimers.clear()
-		for (const timer of this.pressTimers.values()) clearTimeout(timer)
-		this.pressTimers.clear()
-		this.stopAllLevelRepeats()
-		for (const timer of this.selectHoldTimers.values()) clearTimeout(timer)
-		this.selectHoldTimers.clear()
+		this.clearTimers()
 		this.selectHolds.clear()
 		this.secondTapInProgress.clear()
 		this.pressApplied.clear()

@@ -75,7 +75,7 @@ describe('releasing a press', () => {
 
 	/** Press and release one half of a key the way the presets do, holding it for `holdMs`. */
 	async function press(key: Key, field: 'talk' | 'listen', holdMs: number): Promise<void> {
-		const options = { ...byTarget(key), press_behaviour: 'auto', double_tap_listen: true }
+		const options = { ...byTarget(key), press_behaviour: 'auto' }
 		await instance.runAction(`${field}_down`, options)
 		await sleep(holdMs)
 		await instance.runAction(`${field}_up`, options)
@@ -105,7 +105,7 @@ describe('releasing a press', () => {
 	})
 
 	it('holds an unlatched key as a press and lets go of it on release', async () => {
-		const options = { ...byTarget(USER_KEY), press_behaviour: 'auto', double_tap_listen: true }
+		const options = { ...byTarget(USER_KEY), press_behaviour: 'auto' }
 		await instance.runAction('talk_down', options)
 		await sleep(400)
 		expect(await layers(USER_KEY, 'talk')).toEqual({ latched: false, momentary: true })
@@ -136,5 +136,39 @@ describe('releasing a press', () => {
 		await press(FEED_KEY, 'listen', 400)
 		expect(await layers(FEED_KEY, 'listen')).toEqual({ latched: true, momentary: false })
 		expect(await instance.runFeedback('listen_active', byTarget(FEED_KEY))).toBe(true)
+	})
+})
+
+describe('a talk press', () => {
+	let fake: FakeLivematrix
+	let instance: any
+
+	beforeEach(async () => {
+		fake = new FakeLivematrix('server')
+		instance = await startInstance(LivematrixInstance, fake)
+		await waitFor(() => instance.values.key_count === 1, 'the keys')
+	})
+
+	afterEach(async () => {
+		await instance.destroy()
+		await fake.close()
+	})
+
+	const talkStates = () => fake.sent('set_key_state').filter((message) => message.field === 'talk')
+
+	it('waits before opening the mic on a key that can also listen', async () => {
+		await instance.runAction('talk_down', { ...byTarget(USER_KEY), press_behaviour: 'auto' })
+		await sleep(40)
+		expect(talkStates()).toEqual([])
+		await sleep(200)
+		expect(talkStates()).toMatchObject([{ hold: 'momentary', active: true }])
+	})
+
+	it('still waiting when the connection goes away, never lands', async () => {
+		await instance.runAction('talk_down', { ...byTarget(USER_KEY), press_behaviour: 'auto' })
+		await instance.destroy()
+		await sleep(300)
+		expect(instance.heartbeatTimer).toBeUndefined()
+		expect(instance.heldKeys.size).toBe(0)
 	})
 })

@@ -1,4 +1,4 @@
-import { Regex, type CompanionVariableValues, type SomeCompanionConfigField } from '@companion-module/base'
+import type { SomeCompanionConfigField } from '@companion-module/base'
 
 export type ConnectionMode = 'server' | 'client'
 
@@ -15,14 +15,6 @@ export type LivematrixConfig = {
 
 export type LivematrixSecrets = {
 	password?: string
-}
-
-export type LivematrixManifest = {
-	config: LivematrixConfig
-	secrets: LivematrixSecrets
-	actions: Record<string, any>
-	feedbacks: Record<string, any>
-	variables: CompanionVariableValues
 }
 
 /** A livematrix server's plain HTTP listener; `/ws` is served there too. */
@@ -55,7 +47,6 @@ export function getConfigFields(): SomeCompanionConfigField[] {
 			label: 'Server host',
 			width: 6,
 			default: 'localhost',
-			regex: Regex.HOSTNAME,
 			isVisibleExpression: "$(options:connection_mode) == 'server'",
 		},
 		{
@@ -118,7 +109,6 @@ export function getConfigFields(): SomeCompanionConfigField[] {
 			label: 'Control API host',
 			width: 6,
 			default: DEFAULT_CLIENT_HOST,
-			regex: Regex.HOSTNAME,
 			isVisibleExpression: "$(options:connection_mode) == 'client'",
 		},
 		{

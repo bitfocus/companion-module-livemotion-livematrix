@@ -27,13 +27,13 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@companion-module/base@npm:^2.2.1":
-  version: 2.2.1
-  resolution: "@companion-module/base@npm:2.2.1"
+"@companion-module/base@npm:~2.2.1":
+  version: 2.2.2
+  resolution: "@companion-module/base@npm:2.2.2"
   dependencies:
     colord: "npm:^2.10.0"
-    zod: "npm:^4.6.5"
-  checksum: 10c0/1b2d275091daa5865658c56c695ff44c39e465cde4b7bfa19a389c1113c435ba38fe1001cae0b3c1330a37a7b6671792c36b43fb14eb657c532ac9e498b569c2
+    zod: "npm:^4.6.7"
+  checksum: 10c0/b4817166bb27d1c5f83c4d1eff1027910eef64a04466bfe4f1ee1b2e7cef9fcd8bf482b6a3c974b28f5f065036df6cb5e40cc59b7b5657cac30e7132e30d0880
   languageName: node
   linkType: hard
 
@@ -884,7 +884,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "companion-module-livemotion-livematrix@workspace:."
   dependencies:
-    "@companion-module/base": "npm:^2.2.1"
+    "@companion-module/base": "npm:~2.2.1"
     "@companion-module/tools": "npm:^3.2.0"
     "@types/node": "npm:^26.6.5"
     "@types/ws": "npm:^8.18.2"
@@ -2455,7 +2455,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"zod@npm:^4.6.5":
+"zod@npm:^4.6.7":
   version: 4.6.7
   resolution: "zod@npm:4.6.7"
   checksum: 10c0/4ce2eb14034317b7254e347ca37b5ad591cf8333147030cf05b9b5d31692d45073f7f2747aa50cf8c6b29012194d2b22978cecc89969cf34a0d18e89d0ee7d7b

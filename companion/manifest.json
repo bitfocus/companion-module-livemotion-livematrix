@@ -21,7 +21,7 @@
 		"apiVersion": "2.2.1",
 		"entrypoint": "../dist/index.js"
 	},
-	"legacyIds": ["livematrix"],
+	"legacyIds": [],
 	"manufacturer": "Livemotion",
 	"products": ["livematrix"],
 	"keywords": ["Intercom", "Audio", "Broadcast", "Talkback"]

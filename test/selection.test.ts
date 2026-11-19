@@ -51,7 +51,7 @@ describe('selecting a key by holding it', () => {
 		const options = { ...byTarget(key), press_behaviour: 'auto', hold_selects: holdSelects, also_select: false }
 		return {
 			down: () => instance.runAction('talk_down', options, controlId),
-			up: () => instance.runAction('talk_up', { ...options, double_tap_listen: holdSelects }, controlId),
+			up: () => instance.runAction('talk_up', options, controlId),
 		}
 	}
 

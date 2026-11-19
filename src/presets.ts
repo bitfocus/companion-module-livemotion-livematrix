@@ -2,6 +2,7 @@ import {
 	ButtonGraphicsDecorationType,
 	combineRgb,
 	type CompanionPresetDefinitions,
+	type CompanionLayeredButtonPresetDefinition,
 	type CompanionPresetGroup,
 	type CompanionPresetSection,
 } from '@companion-module/base'
@@ -28,7 +29,7 @@ import {
 	INCOMING_TRAIL,
 	WARN,
 } from './brand.js'
-import type { LivematrixManifest } from './config.js'
+import type { ModuleSchema } from './index.js'
 import { LEVEL_STEP_DB, MAX_LISTEN_LEVEL_DB, MIN_LISTEN_LEVEL_DB_DISPLAY } from './levels.js'
 import { MIC_ICON, MIC_OFF_ICON } from './icons.js'
 import { KEY_LOCAL_VARIABLE, expr, keyLocalVariable, overrideValue, presetKeyOptions } from './options.js'
@@ -134,8 +135,8 @@ function offlineNameOverrides() {
 }
 
 export function getPresetDefinitions(keys: KeyConfig[]): {
-	structure: CompanionPresetSection<LivematrixManifest>[]
-	presets: CompanionPresetDefinitions<LivematrixManifest>
+	structure: CompanionPresetSection<ModuleSchema>[]
+	presets: CompanionPresetDefinitions<ModuleSchema>
 } {
 	return new PresetBuilder(keys).build()
 }
@@ -145,10 +146,10 @@ class PresetBuilder {
 	constructor(private readonly keys: KeyConfig[]) {}
 
 	build(): {
-		structure: CompanionPresetSection<LivematrixManifest>[]
-		presets: CompanionPresetDefinitions<LivematrixManifest>
+		structure: CompanionPresetSection<ModuleSchema>[]
+		presets: CompanionPresetDefinitions<ModuleSchema>
 	} {
-		const presets: CompanionPresetDefinitions<LivematrixManifest> = {
+		const presets: CompanionPresetDefinitions<ModuleSchema> = {
 			mic_button: this.createMicPreset(),
 		}
 		presets['selected_volume'] = this.createSelectedVolumePreset()
@@ -168,7 +169,7 @@ class PresetBuilder {
 			presets['listen_by_index'] = this.createSideKeyPreset('listen', 'Listen key (by index)', 'index')
 		}
 
-		const structure: CompanionPresetSection<LivematrixManifest>[] = [
+		const structure: CompanionPresetSection<ModuleSchema>[] = [
 			{
 				id: 'keys',
 				name: 'Intercom keys',
@@ -205,7 +206,7 @@ class PresetBuilder {
 		idPrefix: string,
 		targetPresetId: string,
 		indexPresetId: string,
-	): CompanionPresetGroup<LivematrixManifest>[] {
+	): CompanionPresetGroup<ModuleSchema>[] {
 		if (this.keys.length === 0) return []
 
 		return [
@@ -502,7 +503,11 @@ class PresetBuilder {
 	 * rests in the app's key grey inside a light frame of its colour, and fills
 	 * with the colour when on.
 	 */
-	private createSideKeyPreset(mode: KeyField, name: string, selection: 'index' | 'target') {
+	private createSideKeyPreset(
+		mode: KeyField,
+		name: string,
+		selection: 'index' | 'target',
+	): CompanionLayeredButtonPresetDefinition<ModuleSchema> {
 		const keyOptions = presetKeyOptions(this.keys, selection)
 		const talk = mode === 'talk'
 		const showLevel = !talk
@@ -551,14 +556,14 @@ class PresetBuilder {
 			],
 			feedbacks: [
 				{
-					feedbackId: talk ? 'talk_active' : 'listen_active',
+					feedbackId: talk ? ('talk_active' as const) : ('listen_active' as const),
 					options: keyOptions,
 					styleOverrides: [
 						{ elementId: 'fill', elementProperty: 'color', override: overrideValue(talk ? TALK_ON : LISTEN_ON) },
 					],
 				},
 				{
-					feedbackId: talk ? 'talk_latched' : 'listen_latched',
+					feedbackId: talk ? ('talk_latched' as const) : ('listen_latched' as const),
 					options: keyOptions,
 					styleOverrides: [{ elementId: `${mode}-ring`, elementProperty: 'enabled', override: overrideValue(true) }],
 				},
@@ -586,26 +591,31 @@ class PresetBuilder {
 			],
 			steps: [
 				{
+					// Holding a listen key points the volume keys at it; a talk key
+					// never moves the selection.
 					down: [
-						{
-							actionId: talk ? 'talk_down' : 'listen_down',
-							// Holding a listen key points the volume keys at it; a talk key
-							// never moves the selection.
-							options: {
-								...keyOptions,
-								press_behaviour: 'auto',
-								hold_selects: !talk,
-								also_select: false,
-							},
-						},
+						talk
+							? {
+									actionId: 'talk_down' as const,
+									options: {
+										...keyOptions,
+										press_behaviour: 'auto' as const,
+										hold_selects: false,
+										also_select: false,
+									},
+								}
+							: {
+									actionId: 'listen_down' as const,
+									options: { ...keyOptions, press_behaviour: 'auto' as const, hold_selects: true, also_select: false },
+								},
 					],
 					up: [
-						{
-							actionId: talk ? 'talk_up' : 'listen_up',
-							options: talk
-								? { ...keyOptions, press_behaviour: 'auto', double_tap_listen: false }
-								: { ...keyOptions, press_behaviour: 'auto' },
-						},
+						talk
+							? {
+									actionId: 'talk_up' as const,
+									options: { ...keyOptions, press_behaviour: 'auto' as const },
+								}
+							: { actionId: 'listen_up' as const, options: { ...keyOptions, press_behaviour: 'auto' as const } },
 					],
 				},
 			],
@@ -620,7 +630,10 @@ class PresetBuilder {
 	 * runs across both halves, drawn last so nothing covers it, with the listen
 	 * level along the bottom.
 	 */
-	private createLayeredKeyPreset(name: string, selection: 'index' | 'target') {
+	private createLayeredKeyPreset(
+		name: string,
+		selection: 'index' | 'target',
+	): CompanionLayeredButtonPresetDefinition<ModuleSchema> {
 		const keyOptions = presetKeyOptions(this.keys, selection)
 		const levelY = 84
 		const half = (mode: KeyField, x: number) => ({
@@ -715,13 +728,18 @@ class PresetBuilder {
 						{
 							actionId: 'talk_down' as const,
 							// Held, the key is selected for the volume keys while it talks.
-							options: { ...keyOptions, press_behaviour: 'auto', hold_selects: true, also_select: false },
+							options: {
+								...keyOptions,
+								press_behaviour: 'auto' as const,
+								hold_selects: true,
+								also_select: false,
+							},
 						},
 					],
 					up: [
 						{
 							actionId: 'talk_up' as const,
-							options: { ...keyOptions, press_behaviour: 'auto', double_tap_listen: true },
+							options: { ...keyOptions, press_behaviour: 'auto' as const },
 						},
 					],
 					rotate_left: [
